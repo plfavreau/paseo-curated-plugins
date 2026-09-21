@@ -1,18 +1,20 @@
 import { spawn } from "node:child_process";
-import { stat } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import {
-  SHARE_EXPIRY_HOURS,
-  basename,
+  CHUNK_BYTES,
+  MAX_DOWNLOAD_BYTES,
   isPreviewableImage,
   loadImageRpc,
-  shareImageRpc,
+  mimeTypeFor,
+  readChunkRpc,
 } from "../shared/image";
 
 type Input = RpcInput<typeof loadImageRpc>;
 type Output = RpcOutput<typeof loadImageRpc>;
-type ShareInput = RpcInput<typeof shareImageRpc>;
-type ShareOutput = RpcOutput<typeof shareImageRpc>;
+type ChunkInput = RpcInput<typeof readChunkRpc>;
+type ChunkOutput = RpcOutput<typeof readChunkRpc>;
 
 /** Hard ceiling on the source file we are willing to decode. */
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
@@ -167,47 +169,46 @@ export async function loadImage({ filePath, maxWidth }: Input): Promise<Output> 
   };
 }
 
-/**
- * External helper that publishes a file at a URL the phone can reach.
- *
- * Contract: called as `<command> <file> <hours> --name <name>` and expected to
- * print an https URL on its first line. Override with the env var below.
- */
-const SHARE_COMMAND = process.env.PASEO_IMAGE_PREVIEW_SHARE_COMMAND ?? "/var/www/scratchpad-share.py";
+function chunkFail(error: string): ChunkOutput {
+  return { base64: null, totalBytes: null, mimeType: null, eof: true, error };
+}
 
-export async function shareImage({ filePath }: ShareInput): Promise<ShareOutput> {
+/** Streams the original file to the client one bounded slice at a time. */
+export async function readChunk({ filePath, offset }: ChunkInput): Promise<ChunkOutput> {
   const invalid = await guard(filePath);
-  if (invalid) return { url: null, error: invalid };
+  if (invalid) return chunkFail(invalid);
 
+  let totalBytes: number;
   try {
-    await stat(SHARE_COMMAND);
+    totalBytes = (await stat(filePath)).size;
   } catch {
-    return {
-      url: null,
-      error: "Downloads are not configured on this daemon. See the plugin README.",
-    };
+    return chunkFail("File no longer exists on the daemon.");
   }
+  if (totalBytes > MAX_DOWNLOAD_BYTES) return chunkFail("File is too large to download.");
+  if (offset > totalBytes) return chunkFail("Read past end of file.");
 
-  let result: RunResult;
+  const length = Math.min(CHUNK_BYTES, totalBytes - offset);
+  const buffer = Buffer.allocUnsafe(length);
+
+  let handle: FileHandle | undefined;
   try {
-    result = await run(
-      SHARE_COMMAND,
-      [filePath, String(SHARE_EXPIRY_HOURS), "--name", basename(filePath)],
-      256 * 1024,
-    );
+    handle = await open(filePath, "r");
+    let filled = 0;
+    while (filled < length) {
+      const { bytesRead } = await handle.read(buffer, filled, length - filled, offset + filled);
+      if (bytesRead === 0) break;
+      filled += bytesRead;
+    }
+    return {
+      base64: buffer.subarray(0, filled).toString("base64"),
+      totalBytes,
+      mimeType: mimeTypeFor(filePath),
+      eof: offset + filled >= totalBytes,
+      error: null,
+    };
   } catch (err) {
-    return { url: null, error: err instanceof Error ? err.message : "Failed to share file." };
+    return chunkFail(err instanceof Error ? err.message : "Failed to read file.");
+  } finally {
+    await handle?.close();
   }
-
-  if (result.code !== 0) {
-    const detail = result.stderr.trim().split("\n").pop() ?? "unknown error";
-    return { url: null, error: `Share failed: ${detail}` };
-  }
-
-  // The script prints the URL on its first line, then indented metadata.
-  const url = result.stdout.toString("utf8").trim().split("\n")[0]?.trim() ?? "";
-  if (!url.startsWith("https://")) {
-    return { url: null, error: "Share script returned no URL." };
-  }
-  return { url, error: null };
 }

@@ -8,23 +8,12 @@ import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { useCallback, useMemo, useState } from "react";
 import type { LayoutChangeEvent } from "react-native";
-import { ActivityIndicator, Image, Linking, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Image, Pressable, Text, View } from "react-native";
 import type { ImagePreviewData } from "../shared/image";
-import { SHARE_EXPIRY_HOURS, loadImageRpc, shareImageRpc } from "../shared/image";
+import { loadImageRpc, readChunkRpc } from "../shared/image";
+import { base64ToBytes, canSaveFile, saveFile } from "./download";
 
 const FETCH_MAX_WIDTH = 1024;
-
-/**
- * `react-native` is passed through to plugin code by the host, but the exact
- * surface is not part of the plugin contract, so never assume Linking exists.
- */
-function openExternal(url: string): Promise<unknown> {
-  const linking = Linking as typeof Linking | undefined;
-  if (!linking || typeof linking.openURL !== "function") {
-    return Promise.reject(new Error("no-linking"));
-  }
-  return linking.openURL(url);
-}
 
 export function ImagePreviewItem({
   theme,
@@ -36,10 +25,10 @@ export function ImagePreviewItem({
   const [decodeFailed, setDecodeFailed] = useState(false);
   const [boxWidth, setBoxWidth] = useState(0);
   const loadImage = useRpc(loadImageRpc);
-  const shareImage = useRpc(shareImageRpc);
+  const readChunk = useRpc(readChunkRpc);
   const toast = useToast();
-  const [shareUrl, setShareUrl] = useState<string | null>(null);
-  const [sharing, setSharing] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [progress, setProgress] = useState(0);
 
   const query = useQuery({
     queryKey: ["image-preview", filePath, FETCH_MAX_WIDTH],
@@ -111,11 +100,6 @@ export function ImagePreviewItem({
         color: theme.colors.foregroundMuted,
         fontSize: 11,
       },
-      link: {
-        color: theme.colors.accent,
-        fontSize: 12,
-        textDecorationLine: "underline" as const,
-      },
     }),
     [theme, layout.compact],
   );
@@ -153,30 +137,46 @@ export function ImagePreviewItem({
     [toast],
   );
 
+  // Pulls the original file over the RPC channel in bounded chunks, because a
+  // single oversized frame would silently kill the relay socket.
   const download = useCallback(() => {
-    if (sharing) return;
-    if (shareUrl) {
-      openExternal(shareUrl).catch(() => toast.show("Use the link below", { variant: "info" }));
+    if (downloading) return;
+    if (!canSaveFile()) {
+      toast.error("Saving files is only supported in the Paseo web app.");
       return;
     }
-    setSharing(true);
-    shareImage({ filePath })
-      .then((result) => {
-        if (result.error || !result.url) {
-          toast.error(result.error ?? "Could not create a download link.");
+    setDownloading(true);
+    setProgress(0);
+    const parts: Uint8Array[] = [];
+
+    const pump = (offset: number): Promise<void> =>
+      readChunk({ filePath, offset }).then((result) => {
+        if (result.error || result.base64 === null) {
+          throw new Error(result.error ?? "Download failed.");
+        }
+        const bytes = base64ToBytes(result.base64);
+        if (bytes.length === 0 && !result.eof) {
+          throw new Error("Download stalled.");
+        }
+        parts.push(bytes);
+        const received = offset + bytes.length;
+        if (result.totalBytes) {
+          setProgress(Math.min(1, received / result.totalBytes));
+        }
+        if (result.eof) {
+          saveFile(parts, fileName, result.mimeType ?? "application/octet-stream");
           return;
         }
-        const url = `${result.url}?dl=1`;
-        setShareUrl(url);
-        // The browser may block a popup opened outside a direct gesture, so a
-        // tappable link is always rendered as a fallback.
-        openExternal(url).catch(() => toast.show("Use the link below", { variant: "info" }));
-      })
+        return pump(received);
+      });
+
+    pump(0)
+      .then(() => toast.show(`${fileName} saved`, { variant: "success" }))
       .catch((error: unknown) => {
         toast.error(error instanceof Error ? error.message : "Download failed");
       })
-      .finally(() => setSharing(false));
-  }, [filePath, shareImage, shareUrl, sharing, toast]);
+      .finally(() => setDownloading(false));
+  }, [downloading, fileName, filePath, readChunk, toast]);
 
   const sizeLabel =
     query.data?.width && query.data?.height ? `${query.data.width}×${query.data.height}` : null;
@@ -272,40 +272,28 @@ export function ImagePreviewItem({
           <View style={styles.actions}>
             <Pressable
               accessibilityRole="button"
-              disabled={sharing}
+              disabled={downloading}
               style={[styles.button, styles.primaryButton]}
               onPress={download}
             >
-              {sharing ? (
+              {downloading ? (
                 <ActivityIndicator color={theme.colors.accentForeground} />
               ) : (
                 <Icon name="Download" size={14} color={theme.colors.accentForeground} />
               )}
               <Text style={[styles.buttonLabel, styles.primaryLabel]}>
-                {sharing ? "Preparing…" : "Download"}
+                {downloading ? `Saving ${Math.round(progress * 100)}%` : "Download"}
               </Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
               style={styles.button}
-              onPress={() => copy(shareUrl ?? filePath, shareUrl ? "Link" : "Path")}
+              onPress={() => copy(filePath, "Path")}
             >
-              <Icon
-                name={shareUrl ? "Link" : "Copy"}
-                size={14}
-                color={theme.colors.foreground}
-              />
-              <Text style={styles.buttonLabel}>{shareUrl ? "Copy link" : "Copy path"}</Text>
+              <Icon name="Copy" size={14} color={theme.colors.foreground} />
+              <Text style={styles.buttonLabel}>Copy path</Text>
             </Pressable>
           </View>
-          {shareUrl ? (
-            <Pressable accessibilityRole="link" onPress={() => download()}>
-              <Text style={styles.link} numberOfLines={2}>
-                {shareUrl}
-              </Text>
-              <Text style={styles.path}>Expires in {SHARE_EXPIRY_HOURS}h · anyone with the link</Text>
-            </Pressable>
-          ) : null}
         </Modal.Content>
       </Modal>
     </View>

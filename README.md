@@ -47,25 +47,11 @@ Requires `ffmpeg` and `ffprobe` on the daemon machine.
 
 ### Download button
 
-The download button needs a helper that publishes a file at a URL your phone can reach, because the daemon is usually only reachable through the Paseo relay.
+Downloads need no setup. The daemon streams the original file to the app in 384 KB chunks over the connection you already have, and the app saves it. The file never leaves your daemon and your device, and nothing is uploaded anywhere.
 
-Point the plugin at your own helper:
+The thumbnail is a downscaled JPEG, but the download is the untouched original file.
 
-```bash
-PASEO_IMAGE_PREVIEW_SHARE_COMMAND=/path/to/share-helper
-```
-
-Paseo runs it as:
-
-```
-<command> <file> <hours> --name <filename>
-```
-
-It must print an https URL on its first line. Anything else on stdout is ignored.
-
-Without it the preview and the full size view still work, and the download button reports that downloads are not configured.
-
-Note that sharing copies the original full resolution file to whatever your helper publishes. Use a helper with unguessable URLs and a short expiry.
+This works in the Paseo web app, which includes the mobile app. On a build with no browser file APIs the button says so instead of failing silently. Files above 64 MB are refused.
 
 ## License
 

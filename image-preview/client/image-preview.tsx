@@ -8,7 +8,17 @@ import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { useCallback, useMemo, useState } from "react";
 import type { LayoutChangeEvent } from "react-native";
-import { ActivityIndicator, Image, Pressable, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  Image,
+  Modal as RNModal,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from "react-native";
 import type { ImagePreviewData } from "../shared/image";
 import { loadImageRpc, readChunkRpc } from "../shared/image";
 import { base64ToBytes, canSaveFile, saveFile } from "./download";
@@ -24,9 +34,12 @@ export function ImagePreviewItem({
   const [open, setOpen] = useState(false);
   const [decodeFailed, setDecodeFailed] = useState(false);
   const [boxWidth, setBoxWidth] = useState(0);
+  const [modalBoxWidth, setModalBoxWidth] = useState(0);
   const loadImage = useRpc(loadImageRpc);
   const readChunk = useRpc(readChunkRpc);
   const toast = useToast();
+  const window = useWindowDimensions();
+  const isWeb = Platform.OS === "web";
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState(0);
 
@@ -100,6 +113,48 @@ export function ImagePreviewItem({
         color: theme.colors.foregroundMuted,
         fontSize: 11,
       },
+      webOverlay: {
+        flex: 1,
+        alignItems: "center" as const,
+        justifyContent: "center" as const,
+        backgroundColor: "rgba(0, 0, 0, 0.72)",
+      },
+      webCard: {
+        maxWidth: "92%" as const,
+        maxHeight: "92%" as const,
+        // "stretch" (not "center") so header/image/path/actions all share the
+        // card's own width, driven by its widest child - the image - instead
+        // of each floating at its own natural size on the dark backdrop.
+        alignItems: "stretch" as const,
+        gap: 12,
+        backgroundColor: theme.colors.surface2,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 14,
+        padding: 16,
+      },
+      webHeader: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        justifyContent: "space-between" as const,
+        gap: 12,
+      },
+      webTitle: {
+        color: theme.colors.foreground,
+        fontSize: 14,
+        fontWeight: "600" as const,
+        flexShrink: 1,
+      },
+      webTitleGroup: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        gap: 8,
+        flexShrink: 1,
+      },
+      closeButton: {
+        padding: 6,
+        borderRadius: 6,
+      },
     }),
     [theme, layout.compact],
   );
@@ -121,6 +176,30 @@ export function ImagePreviewItem({
       borderColor: theme.colors.border,
     };
   }, [aspectRatio, boxWidth, maxInlineHeight, theme.colors.border]);
+
+  // The Modal has no size prop (host-owned chrome, fixed width): requesting
+  // width beyond what the content area actually measures just overflows and
+  // clips instead of growing the dialog. Cap to the real measured width and
+  // spend the modal's extra vertical room on height instead.
+  const modalImageStyle = useMemo(() => {
+    if (!aspectRatio || modalBoxWidth <= 0) return undefined;
+    const width = Math.min(modalBoxWidth, window.height * 0.75 * aspectRatio);
+    return { width, aspectRatio, borderRadius: 8 };
+  }, [aspectRatio, modalBoxWidth, window.height]);
+
+  // Web only: rendered inside RN's own Modal (a true full-screen canvas, not
+  // the host's fixed-width dialog), so it is safe to size against the real
+  // viewport with nothing to clip it.
+  const fullscreenImageStyle = useMemo(() => {
+    if (!aspectRatio) return undefined;
+    const width = Math.min(window.width * 0.85, window.height * 0.7 * aspectRatio);
+    return { width, aspectRatio, borderRadius: 8, alignSelf: "center" as const };
+  }, [aspectRatio, window.width, window.height]);
+
+  const onModalLayout = useCallback((event: LayoutChangeEvent) => {
+    const next = event.nativeEvent.layout.width;
+    setModalBoxWidth((previous) => (previous === next ? previous : next));
+  }, []);
 
   const onLayout = useCallback((event: LayoutChangeEvent) => {
     const next = event.nativeEvent.layout.width;
@@ -245,6 +324,30 @@ export function ImagePreviewItem({
 
   const dataUri = query.data?.dataUri ?? null;
 
+  const previewActions = (
+    <View style={styles.actions}>
+      <Pressable
+        accessibilityRole="button"
+        disabled={downloading}
+        style={[styles.button, styles.primaryButton]}
+        onPress={download}
+      >
+        {downloading ? (
+          <ActivityIndicator color={theme.colors.accentForeground} />
+        ) : (
+          <Icon name="Download" size={14} color={theme.colors.accentForeground} />
+        )}
+        <Text style={[styles.buttonLabel, styles.primaryLabel]}>
+          {downloading ? `Saving ${Math.round(progress * 100)}%` : "Download"}
+        </Text>
+      </Pressable>
+      <Pressable accessibilityRole="button" style={styles.button} onPress={() => copy(filePath, "Path")}>
+        <Icon name="Copy" size={14} color={theme.colors.foreground} />
+        <Text style={styles.buttonLabel}>Copy path</Text>
+      </Pressable>
+    </View>
+  );
+
   return (
     <View onLayout={onLayout}>
       <View style={styles.caption}>
@@ -254,48 +357,58 @@ export function ImagePreviewItem({
         {sizeLabel ? <Text style={styles.meta}>{sizeLabel}</Text> : null}
       </View>
       {body}
-      <Modal
-        title={fileName}
-        icon={<Icon name="Image" size={16} color={theme.colors.foreground} />}
-        open={open}
-        onOpenChange={setOpen}
-      >
-        <Modal.Content>
-          {dataUri && aspectRatio ? (
-            <Image
-              source={{ uri: dataUri }}
-              style={{ width: "100%", aspectRatio, borderRadius: 8 }}
-              accessibilityLabel={fileName}
+      {isWeb ? (
+        <RNModal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+          <View style={styles.webOverlay}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close preview"
+              style={StyleSheet.absoluteFillObject}
+              onPress={() => setOpen(false)}
             />
-          ) : null}
-          <Text style={styles.path}>{filePath}</Text>
-          <View style={styles.actions}>
-            <Pressable
-              accessibilityRole="button"
-              disabled={downloading}
-              style={[styles.button, styles.primaryButton]}
-              onPress={download}
-            >
-              {downloading ? (
-                <ActivityIndicator color={theme.colors.accentForeground} />
-              ) : (
-                <Icon name="Download" size={14} color={theme.colors.accentForeground} />
-              )}
-              <Text style={[styles.buttonLabel, styles.primaryLabel]}>
-                {downloading ? `Saving ${Math.round(progress * 100)}%` : "Download"}
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              style={styles.button}
-              onPress={() => copy(filePath, "Path")}
-            >
-              <Icon name="Copy" size={14} color={theme.colors.foreground} />
-              <Text style={styles.buttonLabel}>Copy path</Text>
-            </Pressable>
+            <View style={styles.webCard}>
+              <View style={styles.webHeader}>
+                <View style={styles.webTitleGroup}>
+                  <Icon name="Image" size={16} color={theme.colors.foreground} />
+                  <Text style={styles.webTitle} numberOfLines={1}>
+                    {fileName}
+                  </Text>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Close"
+                  style={styles.closeButton}
+                  onPress={() => setOpen(false)}
+                >
+                  <Icon name="X" size={16} color={theme.colors.foreground} />
+                </Pressable>
+              </View>
+              {dataUri && fullscreenImageStyle ? (
+                <Image source={{ uri: dataUri }} style={fullscreenImageStyle} accessibilityLabel={fileName} />
+              ) : null}
+              <Text style={styles.path}>{filePath}</Text>
+              {previewActions}
+            </View>
           </View>
-        </Modal.Content>
-      </Modal>
+        </RNModal>
+      ) : (
+        <Modal
+          title={fileName}
+          icon={<Icon name="Image" size={16} color={theme.colors.foreground} />}
+          open={open}
+          onOpenChange={setOpen}
+        >
+          <Modal.Content>
+            <View onLayout={onModalLayout}>
+              {dataUri && modalImageStyle ? (
+                <Image source={{ uri: dataUri }} style={modalImageStyle} accessibilityLabel={fileName} />
+              ) : null}
+            </View>
+            <Text style={styles.path}>{filePath}</Text>
+            {previewActions}
+          </Modal.Content>
+        </Modal>
+      )}
     </View>
   );
 }

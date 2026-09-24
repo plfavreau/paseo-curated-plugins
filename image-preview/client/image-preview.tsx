@@ -6,7 +6,7 @@ import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { Icon, Modal, copyText, useToast } from "@getpaseo/plugin/client/react-native";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LayoutChangeEvent } from "react-native";
 import {
   ActivityIndicator,
@@ -39,6 +39,7 @@ export function ImagePreviewItem({
   const [decodeFailed, setDecodeFailed] = useState(false);
   const [boxWidth, setBoxWidth] = useState(0);
   const [modalBoxWidth, setModalBoxWidth] = useState(0);
+  const lastImageSize = useRef<{ width: number; height: number } | null>(null);
   const loadImage = useRpc(loadImageRpc);
   const readChunk = useRpc(readChunkRpc);
   const paseo = usePaseo();
@@ -246,16 +247,26 @@ export function ImagePreviewItem({
         borderRadius: 8,
         backgroundColor: theme.colors.surface1,
       },
+      imagePlaceholder: {
+        alignItems: "center" as const,
+        justifyContent: "center" as const,
+        backgroundColor: theme.colors.surface1,
+        overflow: "hidden" as const,
+      },
     }),
     [theme, layout.compact],
   );
 
   const inlineAspectRatio =
     query.data?.width && query.data?.height ? query.data.width / query.data.height : undefined;
-  const aspectRatio =
-    previewQuery.data?.width && previewQuery.data?.height
-      ? previewQuery.data.width / previewQuery.data.height
-      : undefined;
+  if (previewQuery.data?.width && previewQuery.data?.height) {
+    lastImageSize.current = { width: previewQuery.data.width, height: previewQuery.data.height };
+  }
+  const imageSize = lastImageSize.current ??
+    (query.data?.width && query.data?.height
+      ? { width: query.data.width, height: query.data.height }
+      : null);
+  const aspectRatio = imageSize ? imageSize.width / imageSize.height : undefined;
 
   // Fit the box to the image instead of the image to the box, so there is never
   // any letterboxed dead space around it. Width is measured rather than assumed
@@ -457,7 +468,7 @@ export function ImagePreviewItem({
     </View>
   );
 
-  const previewImage = previewQuery.isPending ? (
+  const previewFallback = previewQuery.isPending ? (
     <ActivityIndicator color={theme.colors.accent} />
   ) : previewQuery.isError || previewQuery.data?.error || !dataUri ? (
     <Text style={styles.error}>
@@ -513,7 +524,7 @@ export function ImagePreviewItem({
                 <View style={styles.webTitleGroup}>
                   <Icon name="Image" size={16} color={theme.colors.foreground} />
                   <Text style={styles.webTitle} numberOfLines={1}>
-                    {fileName}
+                    {activeFileName}
                   </Text>
                 </View>
                 <Pressable
@@ -527,7 +538,9 @@ export function ImagePreviewItem({
               </View>
               {dataUri && fullscreenImageStyle ? (
                 <Image source={{ uri: dataUri }} style={fullscreenImageStyle} accessibilityLabel={activeFileName} />
-              ) : previewImage}
+              ) : (
+                <View style={[styles.imagePlaceholder, fullscreenImageStyle]}>{previewFallback}</View>
+              )}
               {navigation}
               <Text style={styles.path}>{activeFilePath}</Text>
               {previewActions}
@@ -545,7 +558,9 @@ export function ImagePreviewItem({
             <View onLayout={onModalLayout}>
               {dataUri && modalImageStyle ? (
                 <Image source={{ uri: dataUri }} style={modalImageStyle} accessibilityLabel={activeFileName} />
-              ) : previewImage}
+              ) : (
+                <View style={[styles.imagePlaceholder, modalImageStyle]}>{previewFallback}</View>
+              )}
             </View>
             {navigation}
             <Text style={styles.path}>{activeFilePath}</Text>

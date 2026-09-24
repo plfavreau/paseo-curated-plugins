@@ -29,6 +29,7 @@ export default function contribute(client: PluginClientContext) {
                 filePath,
                 fileName: basename(filePath),
                 status: item.status,
+                callId: item.callId,
               },
             },
           ],

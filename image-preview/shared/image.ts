@@ -37,6 +37,7 @@ export const imagePreviewSchema = z.object({
   filePath: z.string(),
   fileName: z.string(),
   status: z.enum(["running", "completed", "failed", "canceled"]),
+  callId: z.string().optional(),
 });
 
 export type ImagePreviewData = z.output<typeof imagePreviewSchema>;

@@ -39,7 +39,7 @@ After editing a plugin's source, run `paseo plugin reload <id>`. Never restart t
 
 ## image-preview
 
-Any `Read` of a `.png`, `.jpg`, `.gif`, `.webp` and similar becomes a thumbnail in the timeline. Tap it to open a full size view with the file path and a download button.
+Any `Read` of a `.png`, `.jpg`, `.gif`, `.webp` and similar becomes a thumbnail in the timeline. Tap it to open a full size view with the file path and a download button. The viewer includes previous/next buttons to browse completed image reads in conversation order; on the web and desktop, the left/right arrow keys also navigate, and Escape closes the viewer. Repeated reads of the same file remain separate slides.
 
 The daemon downscales to 1024px wide and sends a JPEG data URI, so large screenshots stay cheap over the wire.
 

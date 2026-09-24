@@ -1,12 +1,12 @@
 import type { PluginTimelineItemProps } from "@getpaseo/plugin/client";
-import { useRpc } from "@getpaseo/plugin/client";
+import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 // Icon resolves names with Reflect.get() against the lucide module, so `name`
 // must be the exported symbol (PascalCase, e.g. "Download") - not the kebab-case
 // name from the Lucide website. An unknown name renders nothing, silently.
 import { Icon, Modal, copyText, useToast } from "@getpaseo/plugin/client/react-native";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { LayoutChangeEvent } from "react-native";
 import {
   ActivityIndicator,
@@ -20,23 +20,28 @@ import {
   useWindowDimensions,
 } from "react-native";
 import type { ImagePreviewData } from "../shared/image";
-import { loadImageRpc, readChunkRpc } from "../shared/image";
+import { basename, isPreviewableImage, loadImageRpc, readChunkRpc } from "../shared/image";
 import { base64ToBytes, canSaveFile, saveFile } from "./download";
 
 const FETCH_MAX_WIDTH = 1024;
+
+type Slide = { callId: string; filePath: string; fileName: string };
 
 export function ImagePreviewItem({
   theme,
   layout,
   item,
+  agentId,
 }: PluginTimelineItemProps<ImagePreviewData>) {
-  const { filePath, fileName, status } = item.data;
+  const { filePath, fileName, status, callId } = item.data;
   const [open, setOpen] = useState(false);
+  const [selectedCallId, setSelectedCallId] = useState<string | null>(null);
   const [decodeFailed, setDecodeFailed] = useState(false);
   const [boxWidth, setBoxWidth] = useState(0);
   const [modalBoxWidth, setModalBoxWidth] = useState(0);
   const loadImage = useRpc(loadImageRpc);
   const readChunk = useRpc(readChunkRpc);
+  const paseo = usePaseo();
   const toast = useToast();
   const window = useWindowDimensions();
   const isWeb = Platform.OS === "web";
@@ -50,6 +55,81 @@ export function ImagePreviewItem({
     staleTime: 5 * 60 * 1000,
     retry: false,
   });
+
+  const slidesQuery = useQuery({
+    queryKey: ["image-preview-slides", agentId],
+    enabled: open,
+    staleTime: 30 * 1000,
+    queryFn: async (): Promise<Slide[]> => {
+      const entries: Array<{
+        seqStart: number;
+        item: { type: string; callId?: string; status?: string; detail?: { type: string; filePath?: string } };
+      }> = [];
+      let cursor: { epoch: string; seq: number } | null = null;
+      for (;;) {
+        const page = await paseo.agents.ref(agentId).timeline.refetch({
+          direction: cursor ? "before" : "tail",
+          ...(cursor ? { cursor } : {}),
+          projection: "canonical",
+          limit: 200,
+        });
+        if (page.error) throw new Error(page.error);
+        entries.push(...page.entries);
+        if (!page.hasOlder || !page.startCursor || page.startCursor.seq === cursor?.seq) break;
+        cursor = page.startCursor;
+      }
+      return entries
+        .filter((entry) =>
+          entry.item.type === "tool_call" &&
+          entry.item.status === "completed" &&
+          entry.item.detail?.type === "read" &&
+          typeof entry.item.detail.filePath === "string" &&
+          isPreviewableImage(entry.item.detail.filePath),
+        )
+        .sort((first, second) => first.seqStart - second.seqStart)
+        .map((entry) => ({
+          callId: entry.item.callId!,
+          filePath: entry.item.detail!.filePath!,
+          fileName: basename(entry.item.detail!.filePath!),
+        }));
+    },
+  });
+
+  const slides = useMemo(() => slidesQuery.data ?? [], [slidesQuery.data]);
+  const selectedIndex = slides.findIndex((slide) =>
+    selectedCallId ? slide.callId === selectedCallId : slide.filePath === filePath,
+  );
+  const activeSlide = slides[selectedIndex] ?? { filePath, fileName };
+  const activeFilePath = activeSlide.filePath;
+  const activeFileName = activeSlide.fileName;
+  const previewQuery = useQuery({
+    queryKey: ["image-preview", activeFilePath, FETCH_MAX_WIDTH],
+    queryFn: () => loadImage({ filePath: activeFilePath, maxWidth: FETCH_MAX_WIDTH }),
+    enabled: open && status === "completed",
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
+  const navigate = useCallback((direction: -1 | 1) => {
+    const next = slides[selectedIndex + direction];
+    if (next) setSelectedCallId(next.callId);
+  }, [slides, selectedIndex]);
+
+  useEffect(() => {
+    if (!open || !isWeb) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        event.stopPropagation();
+        navigate(event.key === "ArrowLeft" ? -1 : 1);
+      } else if (event.key === "Escape") {
+        event.stopPropagation();
+        setOpen(false);
+      }
+    };
+    globalThis.window.addEventListener("keydown", onKeyDown, true);
+    return () => globalThis.window.removeEventListener("keydown", onKeyDown, true);
+  }, [open, isWeb, navigate]);
 
   const maxInlineHeight = layout.compact ? 280 : 360;
 
@@ -155,27 +235,42 @@ export function ImagePreviewItem({
         padding: 6,
         borderRadius: 6,
       },
+      navigation: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        justifyContent: "center" as const,
+        gap: 16,
+      },
+      navigationButton: {
+        padding: 10,
+        borderRadius: 8,
+        backgroundColor: theme.colors.surface1,
+      },
     }),
     [theme, layout.compact],
   );
 
-  const aspectRatio =
+  const inlineAspectRatio =
     query.data?.width && query.data?.height ? query.data.width / query.data.height : undefined;
+  const aspectRatio =
+    previewQuery.data?.width && previewQuery.data?.height
+      ? previewQuery.data.width / previewQuery.data.height
+      : undefined;
 
   // Fit the box to the image instead of the image to the box, so there is never
   // any letterboxed dead space around it. Width is measured rather than assumed
   // because a percentage width cannot be capped by height in Yoga.
   const inlineImageStyle = useMemo(() => {
-    if (!aspectRatio || boxWidth <= 0) return undefined;
-    const width = Math.min(boxWidth, maxInlineHeight * aspectRatio);
+    if (!inlineAspectRatio || boxWidth <= 0) return undefined;
+    const width = Math.min(boxWidth, maxInlineHeight * inlineAspectRatio);
     return {
       width,
-      aspectRatio,
+      aspectRatio: inlineAspectRatio,
       borderRadius: 8,
       borderWidth: 1,
       borderColor: theme.colors.border,
     };
-  }, [aspectRatio, boxWidth, maxInlineHeight, theme.colors.border]);
+  }, [inlineAspectRatio, boxWidth, maxInlineHeight, theme.colors.border]);
 
   // The Modal has no size prop (host-owned chrome, fixed width): requesting
   // width beyond what the content area actually measures just overflows and
@@ -229,7 +324,7 @@ export function ImagePreviewItem({
     const parts: Uint8Array[] = [];
 
     const pump = (offset: number): Promise<void> =>
-      readChunk({ filePath, offset }).then((result) => {
+      readChunk({ filePath: activeFilePath, offset }).then((result) => {
         if (result.error || result.base64 === null) {
           throw new Error(result.error ?? "Download failed.");
         }
@@ -243,19 +338,19 @@ export function ImagePreviewItem({
           setProgress(Math.min(1, received / result.totalBytes));
         }
         if (result.eof) {
-          saveFile(parts, fileName, result.mimeType ?? "application/octet-stream");
+          saveFile(parts, activeFileName, result.mimeType ?? "application/octet-stream");
           return;
         }
         return pump(received);
       });
 
     pump(0)
-      .then(() => toast.show(`${fileName} saved`, { variant: "success" }))
+      .then(() => toast.show(`${activeFileName} saved`, { variant: "success" }))
       .catch((error: unknown) => {
         toast.error(error instanceof Error ? error.message : "Download failed");
       })
       .finally(() => setDownloading(false));
-  }, [downloading, fileName, filePath, readChunk, toast]);
+  }, [downloading, activeFileName, activeFilePath, readChunk, toast]);
 
   const sizeLabel =
     query.data?.width && query.data?.height ? `${query.data.width}×${query.data.height}` : null;
@@ -308,7 +403,10 @@ export function ImagePreviewItem({
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`Open ${fileName}`}
-        onPress={() => setOpen(true)}
+        onPress={() => {
+          setSelectedCallId(callId ?? null);
+          setOpen(true);
+        }}
       >
         {inlineImageStyle ? (
           <Image
@@ -322,7 +420,51 @@ export function ImagePreviewItem({
     );
   }
 
-  const dataUri = query.data?.dataUri ?? null;
+  const dataUri = previewQuery.data?.dataUri ?? null;
+
+  const navigation = (
+    <View style={styles.navigation}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Previous image"
+        disabled={selectedIndex <= 0}
+        style={[styles.navigationButton, { opacity: selectedIndex > 0 ? 1 : 0.4 }]}
+        onPress={() => navigate(-1)}
+      >
+        <Icon name="ChevronLeft" size={20} color={theme.colors.foreground} />
+      </Pressable>
+      <Text style={styles.meta}>
+        {slidesQuery.isPending
+          ? "Loading slides…"
+          : slidesQuery.isError
+            ? "Slides unavailable"
+            : selectedIndex < 0
+              ? "Current image"
+              : `${selectedIndex + 1} of ${slides.length}`}
+      </Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Next image"
+        disabled={selectedIndex < 0 || selectedIndex >= slides.length - 1}
+        style={[
+          styles.navigationButton,
+          { opacity: selectedIndex >= 0 && selectedIndex < slides.length - 1 ? 1 : 0.4 },
+        ]}
+        onPress={() => navigate(1)}
+      >
+        <Icon name="ChevronRight" size={20} color={theme.colors.foreground} />
+      </Pressable>
+    </View>
+  );
+
+  const previewImage = previewQuery.isPending ? (
+    <ActivityIndicator color={theme.colors.accent} />
+  ) : previewQuery.isError || previewQuery.data?.error || !dataUri ? (
+    <Text style={styles.error}>
+      {previewQuery.data?.error ??
+        (previewQuery.error instanceof Error ? previewQuery.error.message : "Preview unavailable.")}
+    </Text>
+  ) : null;
 
   const previewActions = (
     <View style={styles.actions}>
@@ -341,7 +483,7 @@ export function ImagePreviewItem({
           {downloading ? `Saving ${Math.round(progress * 100)}%` : "Download"}
         </Text>
       </Pressable>
-      <Pressable accessibilityRole="button" style={styles.button} onPress={() => copy(filePath, "Path")}>
+      <Pressable accessibilityRole="button" style={styles.button} onPress={() => copy(activeFilePath, "Path")}>
         <Icon name="Copy" size={14} color={theme.colors.foreground} />
         <Text style={styles.buttonLabel}>Copy path</Text>
       </Pressable>
@@ -384,16 +526,17 @@ export function ImagePreviewItem({
                 </Pressable>
               </View>
               {dataUri && fullscreenImageStyle ? (
-                <Image source={{ uri: dataUri }} style={fullscreenImageStyle} accessibilityLabel={fileName} />
-              ) : null}
-              <Text style={styles.path}>{filePath}</Text>
+                <Image source={{ uri: dataUri }} style={fullscreenImageStyle} accessibilityLabel={activeFileName} />
+              ) : previewImage}
+              {navigation}
+              <Text style={styles.path}>{activeFilePath}</Text>
               {previewActions}
             </View>
           </View>
         </RNModal>
       ) : (
         <Modal
-          title={fileName}
+          title={activeFileName}
           icon={<Icon name="Image" size={16} color={theme.colors.foreground} />}
           open={open}
           onOpenChange={setOpen}
@@ -401,10 +544,11 @@ export function ImagePreviewItem({
           <Modal.Content>
             <View onLayout={onModalLayout}>
               {dataUri && modalImageStyle ? (
-                <Image source={{ uri: dataUri }} style={modalImageStyle} accessibilityLabel={fileName} />
-              ) : null}
+                <Image source={{ uri: dataUri }} style={modalImageStyle} accessibilityLabel={activeFileName} />
+              ) : previewImage}
             </View>
-            <Text style={styles.path}>{filePath}</Text>
+            {navigation}
+            <Text style={styles.path}>{activeFilePath}</Text>
             {previewActions}
           </Modal.Content>
         </Modal>

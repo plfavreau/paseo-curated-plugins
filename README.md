@@ -5,6 +5,7 @@ Custom plugins for [Paseo](https://paseo.sh). Each directory is a standalone plu
 | Plugin | What it does |
 | --- | --- |
 | [`image-preview`](./image-preview) | Renders inline thumbnails for image files the agent reads, instead of a plain text row. |
+| [`tool-stopwatch`](./tool-stopwatch) | Shows a live stopwatch on every running tool call, so a command that hangs is obvious. |
 
 ## Install
 
@@ -52,6 +53,18 @@ Downloads need no setup. The daemon streams the original file to the app in 384 
 The thumbnail is a downscaled JPEG, but the download is the untouched original file.
 
 This works in the Paseo web app, which includes the mobile app. On a build with no browser file APIs the button says so instead of failing silently. Files above 64 MB are refused.
+
+## tool-stopwatch
+
+While a tool call is running (shell command, file edit, search, fetch, subagent…), its row shows a stopwatch counting up. It turns amber after 1 minute and red after 5 minutes. When the call finishes, the normal Paseo row comes back, with its tap-to-open detail sheet.
+
+Pure client plugin: no daemon code and no dependencies on the daemon machine.
+
+Limits, all coming from the plugin API:
+
+- Only the running time is shown. Tool calls carry no start or end timestamps, so there is no reliable duration or end time for finished calls.
+- While a call runs, its row is the plugin's row, so the native detail sheet can't be opened until the call finishes.
+- Image reads are left to `image-preview`.
 
 ## License
 

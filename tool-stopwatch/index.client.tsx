@@ -4,6 +4,7 @@ import {
   STOPWATCH_KIND,
   STOPWATCH_VERSION,
   describe,
+  detailBody,
   shouldTrack,
   stopwatchSchema,
 } from "./shared/stopwatch";
@@ -25,7 +26,7 @@ export default function contribute(client: PluginClientContext) {
               type: "plugin" as const,
               kind: STOPWATCH_KIND,
               version: STOPWATCH_VERSION,
-              data: { callId: item.callId, ...describe(item.name, detail) },
+              data: { callId: item.callId, ...describe(item.name, detail), body: detailBody(detail) },
             },
           ],
         };

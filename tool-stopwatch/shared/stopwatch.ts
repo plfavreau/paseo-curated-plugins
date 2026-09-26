@@ -8,6 +8,7 @@ export const stopwatchSchema = z.object({
   label: z.string(),
   summary: z.string(),
   icon: z.string(),
+  body: z.string(),
 });
 
 export type StopwatchData = z.output<typeof stopwatchSchema>;
@@ -37,7 +38,7 @@ export function shouldTrack(detail: Detail): boolean {
   return true;
 }
 
-export function describe(name: string, detail: Detail): Omit<StopwatchData, "callId"> {
+export function describe(name: string, detail: Detail): Omit<StopwatchData, "callId" | "body"> {
   switch (detail.type) {
     case "shell":
       return { label: "Shell", summary: firstLine(str(detail.command) ?? ""), icon: "SquareTerminal" };
@@ -61,6 +62,40 @@ export function describe(name: string, detail: Detail): Omit<StopwatchData, "cal
       return { label: str(detail.label) ?? name, summary: firstLine(str(detail.text) ?? ""), icon: "Wrench" };
     default:
       return { label: name, summary: "", icon: "Wrench" };
+  }
+}
+
+const BODY_MAX_CHARS = 16_000;
+
+function tail(text: string): string {
+  return text.length > BODY_MAX_CHARS ? `…${text.slice(-BODY_MAX_CHARS)}` : text;
+}
+
+/** Text for the plugin's detail sheet: what the call is doing and its live output. */
+export function detailBody(detail: Detail): string {
+  switch (detail.type) {
+    case "shell": {
+      const head = [`$ ${str(detail.command) ?? ""}`];
+      const cwd = str(detail.cwd);
+      if (cwd) head.push(`in ${cwd}`);
+      const output = typeof detail.output === "string" ? detail.output : "";
+      return tail(`${head.join("\n")}\n\n${output || "(no output yet)"}`);
+    }
+    case "edit":
+      return tail(str(detail.unifiedDiff) ?? str(detail.newString) ?? str(detail.filePath) ?? "");
+    case "write":
+    case "read":
+      return tail(str(detail.content) ?? str(detail.filePath) ?? "");
+    case "sub_agent":
+      return tail([str(detail.description), str(detail.log)].filter(Boolean).join("\n\n"));
+    case "plain_text":
+      return tail(str(detail.text) ?? "");
+    default:
+      try {
+        return tail(JSON.stringify(detail, null, 2));
+      } catch {
+        return "";
+      }
   }
 }
 

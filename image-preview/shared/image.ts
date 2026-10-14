@@ -86,7 +86,7 @@ export const readChunkRpc = defineRpc({
   }),
 });
 
-/** Raw bytes per chunk. 384 KiB becomes 512 KiB of base64, against a ~768 KiB budget. */
+/** Raw bytes per chunk. 384 KiB becomes 512 KiB of base64, against a ~768 KiB budget. Must stay a multiple of 3 so chunks concatenate as base64. */
 export const CHUNK_BYTES = 384 * 1024;
 
 /** Refuse absurd loops. 64 MiB at 384 KiB per round trip is already 170 requests. */

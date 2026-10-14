@@ -22,6 +22,7 @@ import {
 import type { ImagePreviewData } from "../shared/image";
 import { basename, isPreviewableImage, loadImageRpc, readChunkRpc } from "../shared/image";
 import { base64ToBytes, canSaveFile, saveFile } from "./download";
+import { MAX_DISPLAY_BYTES, canDisplayOriginal, readOriginal, toDataUri } from "./original";
 
 const FETCH_MAX_WIDTH = 1024;
 
@@ -48,6 +49,7 @@ export function ImagePreviewItem({
   const isWeb = Platform.OS === "web";
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [brokenOriginals, setBrokenOriginals] = useState<ReadonlySet<string>>(() => new Set());
 
   const query = useQuery({
     queryKey: ["image-preview", filePath, FETCH_MAX_WIDTH],
@@ -108,6 +110,19 @@ export function ImagePreviewItem({
     queryFn: () => loadImage({ filePath: activeFilePath, maxWidth: FETCH_MAX_WIDTH }),
     enabled: open && status === "completed",
     staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+  const originalQuery = useQuery({
+    queryKey: ["image-preview-original", activeFilePath],
+    queryFn: async () =>
+      toDataUri(await readOriginal(readChunk, activeFilePath, { maxBytes: MAX_DISPLAY_BYTES })),
+    enabled:
+      open &&
+      status === "completed" &&
+      canDisplayOriginal(activeFilePath) &&
+      !brokenOriginals.has(activeFilePath),
+    staleTime: 5 * 60 * 1000,
+    gcTime: 2 * 60 * 1000,
     retry: false,
   });
 
@@ -322,8 +337,6 @@ export function ImagePreviewItem({
     [toast],
   );
 
-  // Pulls the original file over the RPC channel in bounded chunks, because a
-  // single oversized frame would silently kill the relay socket.
   const download = useCallback(() => {
     if (downloading) return;
     if (!canSaveFile()) {
@@ -332,31 +345,11 @@ export function ImagePreviewItem({
     }
     setDownloading(true);
     setProgress(0);
-    const parts: Uint8Array[] = [];
-
-    const pump = (offset: number): Promise<void> =>
-      readChunk({ filePath: activeFilePath, offset }).then((result) => {
-        if (result.error || result.base64 === null) {
-          throw new Error(result.error ?? "Download failed.");
-        }
-        const bytes = base64ToBytes(result.base64);
-        if (bytes.length === 0 && !result.eof) {
-          throw new Error("Download stalled.");
-        }
-        parts.push(bytes);
-        const received = offset + bytes.length;
-        if (result.totalBytes) {
-          setProgress(Math.min(1, received / result.totalBytes));
-        }
-        if (result.eof) {
-          saveFile(parts, activeFileName, result.mimeType ?? "application/octet-stream");
-          return;
-        }
-        return pump(received);
-      });
-
-    pump(0)
-      .then(() => toast.show(`${activeFileName} saved`, { variant: "success" }))
+    readOriginal(readChunk, activeFilePath, { onProgress: setProgress })
+      .then((file) => {
+        saveFile(file.base64Parts.map(base64ToBytes), activeFileName, file.mimeType);
+        toast.show(`${activeFileName} saved`, { variant: "success" });
+      })
       .catch((error: unknown) => {
         toast.error(error instanceof Error ? error.message : "Download failed");
       })
@@ -431,7 +424,12 @@ export function ImagePreviewItem({
     );
   }
 
-  const dataUri = previewQuery.data?.dataUri ?? null;
+  const originalUri = brokenOriginals.has(activeFilePath) ? null : (originalQuery.data ?? null);
+  const dataUri = originalUri ?? previewQuery.data?.dataUri ?? null;
+  const onModalImageError = useCallback(() => {
+    if (!originalUri) return;
+    setBrokenOriginals((previous) => new Set(previous).add(activeFilePath));
+  }, [originalUri, activeFilePath]);
 
   const navigation = (
     <View style={styles.navigation}>
@@ -537,7 +535,12 @@ export function ImagePreviewItem({
                 </Pressable>
               </View>
               {dataUri && fullscreenImageStyle ? (
-                <Image source={{ uri: dataUri }} style={fullscreenImageStyle} accessibilityLabel={activeFileName} />
+                <Image
+                  source={{ uri: dataUri }}
+                  style={fullscreenImageStyle}
+                  accessibilityLabel={activeFileName}
+                  onError={onModalImageError}
+                />
               ) : (
                 <View style={[styles.imagePlaceholder, fullscreenImageStyle]}>{previewFallback}</View>
               )}
@@ -557,7 +560,12 @@ export function ImagePreviewItem({
           <Modal.Content>
             <View onLayout={onModalLayout}>
               {dataUri && modalImageStyle ? (
-                <Image source={{ uri: dataUri }} style={modalImageStyle} accessibilityLabel={activeFileName} />
+                <Image
+                  source={{ uri: dataUri }}
+                  style={modalImageStyle}
+                  accessibilityLabel={activeFileName}
+                  onError={onModalImageError}
+                />
               ) : (
                 <View style={[styles.imagePlaceholder, modalImageStyle]}>{previewFallback}</View>
               )}

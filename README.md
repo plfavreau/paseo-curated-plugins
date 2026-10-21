@@ -5,6 +5,7 @@ Custom plugins for [Paseo](https://paseo.sh). Each directory is a standalone plu
 | Plugin | What it does |
 | --- | --- |
 | [`image-preview`](./image-preview) | Renders inline thumbnails for image files the agent reads, instead of a plain text row. |
+| [`system-health`](./system-health) | Sidebar pills for CPU, RAM and disk usage, with a Clean button that prompts a session of your choice. |
 
 ## Install
 
@@ -52,6 +53,14 @@ Downloads need no setup. The daemon streams the original file to the app in 384 
 The thumbnail is a downscaled JPEG, but the download is the untouched original file.
 
 This works in the Paseo web app, which includes the mobile app. On a build with no browser file APIs the button says so instead of failing silently. Files above 64 MB are refused.
+
+## system-health
+
+A sidebar row shows three pills for CPU, RAM and disk usage on the daemon machine: green below 80%, orange from 80% to 95%, red above 95%. They refresh every 15 seconds.
+
+Tap the row for a popover with the details and a **Clean** button. Clean sends a prompt with the current readings to the session you pick in "Send cleanup prompt to" (searchable, grouped and ordered like the sidebar), so an agent you keep open can run another cleanup round. The plugin never deletes anything itself. The prompt is editable under Settings → Plugins → System health; `{stats}` is replaced with the readings.
+
+On macOS, RAM uses `memory_pressure`, which ignores the file cache macOS counts as used.
 
 ## License
 

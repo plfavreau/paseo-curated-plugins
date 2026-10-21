@@ -1,7 +1,8 @@
-import type { PaseoApi } from "@getpaseo/client";
-import type { PluginServerContext } from "@getpaseo/plugin/server";
+import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
 import { readStats } from "./server/stats";
 import { cleanRpc, DEFAULT_PROMPT, preferences, sessionsRpc, statsRpc, type Session } from "./shared/contracts";
+
+type PaseoApi = PluginHandlerContext["paseo"];
 
 type Group = Session["group"];
 const GROUP_ORDER: Group[] = ["Pinned", "Working", "Needs input", "Failed", "Done"];

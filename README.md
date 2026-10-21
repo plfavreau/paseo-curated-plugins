@@ -6,6 +6,7 @@ Custom plugins for [Paseo](https://paseo.sh). Each directory is a standalone plu
 | --- | --- |
 | [`image-preview`](./image-preview) | Renders inline thumbnails for image files the agent reads, instead of a plain text row. |
 | [`system-health`](./system-health) | Sidebar pills for CPU, RAM and disk usage, with a Clean button that prompts a session of your choice. |
+| [`ai-accounts`](./ai-accounts) | Sign in several Claude and ChatGPT subscriptions, see their limits, and move conversations between them. |
 
 ## Install
 
@@ -61,6 +62,49 @@ A sidebar row shows three pills for CPU, RAM and disk usage on the daemon machin
 Tap the row for a popover with the details and a **Clean** button. Clean sends a prompt with the current readings to the session you pick in "Send cleanup prompt to" (searchable, grouped and ordered like the sidebar), so an agent you keep open can run another cleanup round. The plugin never deletes anything itself. The prompt is editable under Settings → Plugins → System health; `{stats}` is replaced with the readings.
 
 On macOS, RAM uses `memory_pressure`, which ignores the file cache macOS counts as used.
+
+## ai-accounts
+
+Sign in several Claude and ChatGPT (Codex) subscriptions and spread conversations across them. Every conversation gets a composer pill with its account and usage; click it to move the conversation to another account. The AI accounts screen shows every account's 5-hour and weekly limits, and a **Balance** button proposes moves to even out the load before anything changes.
+
+New conversations start on the account furthest behind its usage pace. Mark one as **Default** to pin new conversations to it instead.
+
+### Requirements
+
+- Paseo 0.12 or later.
+- OpenCode for Claude and Codex accounts, Claude Code for Claude accounts.
+- macOS for Claude Code: each account's credentials live in their own Keychain entry.
+- `sqlite3` on `PATH` (shipped with macOS).
+
+The Codex CLI keeps its own login, so its conversations get no pill.
+
+### OpenCode setup
+
+OpenCode reaches the accounts through two auth plugins in this directory, which wrap [`@ex-machina/opencode-anthropic-auth`](https://www.npmjs.com/package/@ex-machina/opencode-anthropic-auth) and [`opencode-openai-codex-auth`](https://www.npmjs.com/package/opencode-openai-codex-auth). Add them to the `plugin` list of `~/.config/opencode/opencode.json`, with the path of your clone, and remove any other Anthropic or Codex auth plugin from that list:
+
+```json
+{
+  "plugin": [
+    "file:///path/to/paseo-curated-plugins/ai-accounts/opencode-plugin.ts",
+    "file:///path/to/paseo-curated-plugins/ai-accounts/opencode-codex-plugin.ts"
+  ]
+}
+```
+
+Restart your OpenCode conversations afterwards. `npm install` also patches `opencode-openai-codex-auth` 4.4.0 so it passes current GPT model ids through instead of rewriting them to `gpt-5.1`, which the ChatGPT backend rejects.
+
+### Balance options
+
+Balance sorts conversations into careful work and housekeeping, by title by default. Two switches in the plan, both off at first and remembered:
+
+- **Send housekeeping to Codex** moves housekeeping conversations from Claude to Codex.
+- **Sort conversations with a Codex model** asks the smallest Codex model in your catalog to sort them instead of guessing from titles. It sends each conversation's title, project name, tool counts and first and latest request (truncated) to OpenAI through your own Codex account, once per Balance.
+
+### Good to know
+
+- Logins use the same public OAuth clients as Claude Code and the Codex CLI. Using a subscription outside the vendor's own tools may be against its terms; you decide.
+- Tokens are stored in `~/.local/share/ai-accounts/accounts.json` (mode 600) and, for Claude Code, in the macOS Keychain. Removing an account deletes both.
+- Claude Code reads credentials from a per-account Keychain entry through an undocumented setting, so a Claude Code update could break switching there. `/status` inside Claude Code shows your own email for every account; the account in use is the one the pill shows.
 
 ## License
 

@@ -13,7 +13,7 @@ import {
 import { getHealth, getSessions, planBalance, setSessionTier, startBalance } from "./server/balance";
 import { getForceStatus, planForce, startForce } from "./server/force-account";
 import { prepareClaudeSession } from "./server/claude-session";
-import { writeOpenCodeShims } from "./server/opencode-shims";
+import { syncOpenCodePluginsInBackground } from "./server/opencode-shims";
 import {
   accountStateRpc,
   balancePlanRpc,
@@ -52,7 +52,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(balanceStartRpc, startBalance);
   server.handle(setTierRpc, setSessionTier);
   server.handle(healthRpc, getHealth);
-  void writeOpenCodeShims().catch((error) => console.error(`[ai-accounts] could not write OpenCode shims: ${error}`));
+  syncOpenCodePluginsInBackground();
   const unsubscribe = server.before("agent.session_open", ({ request }) => prepareClaudeSession(request));
   return unsubscribe;
 }

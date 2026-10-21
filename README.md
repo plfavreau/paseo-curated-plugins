@@ -80,18 +80,11 @@ The Codex CLI keeps its own login, so its conversations get no pill.
 
 ### OpenCode setup
 
-OpenCode reaches the accounts through two auth plugins in this directory, which wrap [`@ex-machina/opencode-anthropic-auth`](https://www.npmjs.com/package/@ex-machina/opencode-anthropic-auth) and [`opencode-openai-codex-auth`](https://www.npmjs.com/package/opencode-openai-codex-auth). Once the Paseo plugin is running it writes two stable entry points to `~/.local/share/ai-accounts/opencode/`, which keep working when the plugin is updated or reinstalled elsewhere. Add them to the `plugin` list of `~/.config/opencode/opencode.json`, replacing `<you>` with your user name, and remove any other Anthropic or Codex auth plugin from that list:
+Nothing to configure. OpenCode reaches the accounts through two auth plugins in this directory, which wrap [`@ex-machina/opencode-anthropic-auth`](https://www.npmjs.com/package/@ex-machina/opencode-anthropic-auth) and [`opencode-openai-codex-auth`](https://www.npmjs.com/package/opencode-openai-codex-auth). As soon as you add a Claude or Codex account, the Paseo plugin drops a one-line file for that provider into `~/.config/opencode/plugins/` (`ai-accounts-anthropic.ts`, `ai-accounts-codex.ts`), which OpenCode loads on its own. Removing the provider's last account removes the file. Without any account, OpenCode is left untouched.
 
-```json
-{
-  "plugin": [
-    "file:///Users/<you>/.local/share/ai-accounts/opencode/anthropic.ts",
-    "file:///Users/<you>/.local/share/ai-accounts/opencode/codex.ts"
-  ]
-}
-```
+If you have another Anthropic or Codex auth plugin in `~/.config/opencode/opencode.json`, remove it.
 
-Restart your OpenCode conversations afterwards. `npm install` also patches `opencode-openai-codex-auth` 4.4.0 so it passes current GPT model ids through instead of rewriting them to `gpt-5.1`, which the ChatGPT backend rejects.
+Restart your OpenCode conversations after adding the first account. `npm install` also patches `opencode-openai-codex-auth` 4.4.0 so it passes current GPT model ids through instead of rewriting them to `gpt-5.1`, which the ChatGPT backend rejects.
 
 ### Balance options
 

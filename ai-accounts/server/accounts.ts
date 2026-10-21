@@ -29,6 +29,7 @@ import {
   withStore,
 } from "./account-store";
 import { removeNamespace } from "./claude-keychain";
+import { syncOpenCodePluginsInBackground } from "./opencode-shims";
 import { PLUGIN_ID, daemonUrl, paseoCliPath } from "./environment";
 import { nextRecovery, normalizeUsage, recommendAccount, toRecommendationAccount } from "./recommendation";
 
@@ -315,6 +316,7 @@ export async function completeLogin({ flowId, callback }: RpcInput<typeof comple
     expires: Date.now() + body.expires_in * 1000,
     email: body.account?.email ?? body.account?.email_address,
   });
+  syncOpenCodePluginsInBackground();
   return { accountId: account.id, email: account.email };
 }
 
@@ -394,6 +396,7 @@ export async function removeAccount({ provider, accountId }: RpcInput<typeof rem
     return { removed: store.accounts.length !== before };
   });
   if (result.removed && provider === "anthropic") await removeNamespace(accountId);
+  syncOpenCodePluginsInBackground();
   return result;
 }
 

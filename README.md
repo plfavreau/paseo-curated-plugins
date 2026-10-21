@@ -80,13 +80,13 @@ The Codex CLI keeps its own login, so its conversations get no pill.
 
 ### OpenCode setup
 
-OpenCode reaches the accounts through two auth plugins in this directory, which wrap [`@ex-machina/opencode-anthropic-auth`](https://www.npmjs.com/package/@ex-machina/opencode-anthropic-auth) and [`opencode-openai-codex-auth`](https://www.npmjs.com/package/opencode-openai-codex-auth). Add them to the `plugin` list of `~/.config/opencode/opencode.json`, with the path of your clone, and remove any other Anthropic or Codex auth plugin from that list:
+OpenCode reaches the accounts through two auth plugins in this directory, which wrap [`@ex-machina/opencode-anthropic-auth`](https://www.npmjs.com/package/@ex-machina/opencode-anthropic-auth) and [`opencode-openai-codex-auth`](https://www.npmjs.com/package/opencode-openai-codex-auth). Once the Paseo plugin is running it writes two stable entry points to `~/.local/share/ai-accounts/opencode/`, which keep working when the plugin is updated or reinstalled elsewhere. Add them to the `plugin` list of `~/.config/opencode/opencode.json`, replacing `<you>` with your user name, and remove any other Anthropic or Codex auth plugin from that list:
 
 ```json
 {
   "plugin": [
-    "file:///path/to/paseo-curated-plugins/ai-accounts/opencode-plugin.ts",
-    "file:///path/to/paseo-curated-plugins/ai-accounts/opencode-codex-plugin.ts"
+    "file:///Users/<you>/.local/share/ai-accounts/opencode/anthropic.ts",
+    "file:///Users/<you>/.local/share/ai-accounts/opencode/codex.ts"
   ]
 }
 ```

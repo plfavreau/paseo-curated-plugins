@@ -1,5 +1,18 @@
 {
   "id": "ai-accounts",
+  "description": "Sign in several Claude and ChatGPT subscriptions, see their limits, and move conversations between them.",
+  "build": [
+    [
+      "npm",
+      "ci",
+      "--omit=dev",
+      "--ignore-scripts"
+    ],
+    [
+      "node",
+      "scripts/patch-codex-models.mjs"
+    ]
+  ],
   "requirements": {
     "paseo": ">=0.12.0"
   }

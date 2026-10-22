@@ -44,23 +44,31 @@ export function ForceProgressCard({ theme, dense, job, running, onDismiss }: { t
   const count = (outcome: ForceJob["results"][number]["outcome"]) => job.results.filter((result) => result.outcome === outcome).length;
   const failures = job.results.filter((result) => result.outcome === "failed");
   const notes = job.results.filter((result) => result.outcome !== "failed" && result.detail);
+  const failed = job.phase === "failed";
+  const partial = !running && !failed && failures.length > 0;
+  const stuck = `${failures.length} conversation${failures.length === 1 ? "" : "s"} could not move`;
   const title =
     job.kind === "balance"
       ? running
         ? "Rebalancing conversations…"
-        : job.phase === "failed"
+        : failed
           ? "Could not finish rebalancing"
-          : "Conversations rebalanced"
+          : partial
+            ? `Rebalanced, but ${stuck}`
+            : "Conversations rebalanced"
       : running
         ? `Moving everything to ${job.email}…`
-        : job.phase === "failed"
+        : failed
           ? `Could not move everything to ${job.email}`
-          : `Everything now uses ${job.email}`;
+          : partial
+            ? `${stuck} to ${job.email}`
+            : `Everything now uses ${job.email}`;
+  const short = (text: string) => (text.length > 48 ? `${text.slice(0, 47)}…` : text);
   return (
     <Group theme={theme} dense={dense}>
       <View key="status" style={[ui.row, { flexDirection: "column", alignItems: "stretch", gap: 8 }]}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-          {running ? <ActivityIndicator color={theme.colors.foregroundMuted} size="small" /> : <Dot color={job.phase === "failed" ? theme.colors.statusDanger : theme.colors.statusSuccess} />}
+          {running ? <ActivityIndicator color={theme.colors.foregroundMuted} size="small" /> : <Dot color={failed ? theme.colors.statusDanger : partial ? theme.colors.statusWarning : theme.colors.statusSuccess} />}
           <Text style={[ui.primary, { flex: 1, fontWeight: "600" }]}>{title}</Text>
           {running ? null : <Button theme={theme} kind="plain" color={theme.colors.foregroundMuted} title="Dismiss" onPress={onDismiss} />}
         </View>
@@ -77,7 +85,7 @@ export function ForceProgressCard({ theme, dense, job, running, onDismiss }: { t
         ) : null}
         {job.error ? <Text style={ui.danger}>{job.error}</Text> : null}
         {failures.map((result) => (
-          <Text key={result.agentId} style={ui.danger}>{`${result.title}: ${result.detail ?? "failed"}`}</Text>
+          <Text key={result.agentId} style={ui.danger}>{`“${short(result.title)}”: ${result.detail ?? "failed"}`}</Text>
         ))}
         {notes.map((result) => (
           <Text key={result.agentId} style={ui.secondary}>{`${result.title}: ${result.detail}`}</Text>

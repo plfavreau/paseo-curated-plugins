@@ -324,7 +324,7 @@ export async function switchAccount({ provider, agentId, accountId }: RpcInput<t
   const daemon = createDaemonClient();
   let previousModelId: string | null = null;
   const store = await readStore();
-  let modelId = await providerModel(provider, store.preferredModelIds?.[provider]);
+  let modelId: string | null = null;
   let previousAccountId: string | undefined;
   let sessionId: string | undefined;
   let assignmentChanged = false;
@@ -340,8 +340,8 @@ export async function switchAccount({ provider, agentId, accountId }: RpcInput<t
     sessionId = current.agent.runtimeInfo?.sessionId ?? undefined;
     // Only the OpenCode harness spans providers; a Claude or Codex harness keeps whatever model it runs.
     const multiProvider = (current.agent.provider ?? "").startsWith("opencode");
-    if (!multiProvider) modelId = previousModelId ?? modelId;
-    if (!modelId) throw new Error(`No ${providerName(provider)} model is available in OpenCode`);
+    modelId = multiProvider ? await providerModel(provider, store.preferredModelIds?.[provider]) : previousModelId;
+    if (multiProvider && !modelId) throw new Error(`No ${providerName(provider)} model is available in OpenCode`);
     previousAccountId = await withStore((store) => {
       if (!store.accounts.some((account) => account.id === accountId && account.provider === provider)) {
         throw new Error(`${providerName(provider)} account not found`);
@@ -353,7 +353,7 @@ export async function switchAccount({ provider, agentId, accountId }: RpcInput<t
       return previous;
     });
     assignmentChanged = true;
-    if (previousModelId !== modelId) {
+    if (modelId && previousModelId !== modelId) {
       await daemon.setAgentModel(agentId, modelId);
       modelChanged = true;
     }
@@ -406,7 +406,8 @@ export async function setPreferred({ provider, accountId }: RpcInput<typeof setP
 }
 
 export async function getModelCatalog({ provider }: RpcInput<typeof modelCatalogRpc>) {
-  const [models, store] = await Promise.all([availableProviderModels(provider), readStore()]);
+  // A broken or missing OpenCode only hides the model picker; accounts work without it.
+  const [models, store] = await Promise.all([availableProviderModels(provider).catch(() => []), readStore()]);
   const preferred = store.preferredModelIds?.[provider];
   return {
     models,

@@ -31,6 +31,8 @@ export const accountStateRpc = defineRpc({
   output: z.object({
     accounts: z.array(accountSchema),
     activeAccountId: z.string().nullable(),
+    /** The account a Claude Code conversation's running process was started with; null when it predates the plugin. */
+    launchedAccountId: z.string().nullable(),
     recommendedAccountId: z.string().nullable(),
     recommendedProvider: providerSchema.nullable(),
     recommendationReason: z.string().nullable(),

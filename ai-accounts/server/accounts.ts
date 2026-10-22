@@ -208,6 +208,7 @@ export async function getAccountState(
   return {
     accounts,
     activeAccountId,
+    launchedAccountId: agentId ? (store.claudeLaunches?.[agentId] ?? null) : null,
     recommendedAccountId: recommended?.id ?? null,
     recommendedProvider: recommended?.provider ?? null,
     recommendationReason: recommended

@@ -242,7 +242,9 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
     const isRecommended = account.id === state?.recommendedAccountId;
     const isDefault = account.id === state?.preferredAccountId;
     const isActive = !allSessions && account.isAssigned && isCurrentProvider;
-    const canSwitch = !allSessions && !isActive && !busy && !isTurnActive;
+    // A Claude Code process keeps the login it started with, so a pin it never restarted on does nothing yet.
+    const needsRestart = isActive && (agent?.provider ?? "").startsWith("claude") && state?.launchedAccountId !== account.id;
+    const canSwitch = !allSessions && (!isActive || needsRestart) && !busy && !isTurnActive;
     const reconnect = () => {
       setReauthEmail(account.email);
       startLogin.mutate({ provider });
@@ -296,7 +298,7 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
                 <Tag color={c.statusDanger}>Reconnect</Tag>
               </Pressable>
             ) : null}
-            {isActive ? <Tag color={c.foreground}>In use</Tag> : null}
+            {needsRestart ? <Tag color={c.statusDanger}>Tap to restart on this account</Tag> : isActive ? <Tag color={c.foreground}>In use</Tag> : null}
             {isDefault ? <Tag color={c.foreground}>Default</Tag> : null}
             {isRecommended ? <Tag color={c.foregroundMuted}>Recommended</Tag> : null}
             <Text numberOfLines={1} style={[ui.secondary, { flexShrink: 1 }]}>
@@ -340,7 +342,7 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
         accessibilityRole="button"
         accessibilityState={{ disabled: !canSwitch, selected: isActive }}
         accessibilityLabel={
-          isActive ? `${account.email} is active` : isTurnActive ? "Switching is locked while this conversation is responding" : `Switch this conversation to ${brand.name} with ${account.email}`
+          needsRestart ? `Restart this conversation on ${account.email}` : isActive ? `${account.email} is active` : isTurnActive ? "Switching is locked while this conversation is responding" : `Switch this conversation to ${brand.name} with ${account.email}`
         }
         key={account.id}
         onPress={() => {

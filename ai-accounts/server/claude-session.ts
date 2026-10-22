@@ -1,5 +1,5 @@
 import type { PluginSessionOpenRequest } from "@getpaseo/plugin/server";
-import { ensureFreshAccount } from "./account-store";
+import { ensureFreshAccount, withStore } from "./account-store";
 import { createNamespace, writeClaudeCredentials } from "./claude-keychain";
 
 export function isClaudeHarness(provider: string): boolean {
@@ -16,5 +16,8 @@ export async function prepareClaudeSession(request: PluginSessionOpenRequest): P
   if (!account) return undefined;
   const dir = await createNamespace(account.id);
   await writeClaudeCredentials(account);
+  await withStore((store) => {
+    store.claudeLaunches = { ...store.claudeLaunches, [request.agentId]: account.id };
+  });
   return { ...request, env: { ...request.env, CLAUDE_SECURESTORAGE_CONFIG_DIR: dir } };
 }

@@ -64,7 +64,7 @@ export const completeLoginRpc = defineRpc({
 export const switchAccountRpc = defineRpc({
   name: "ai-accounts.switch",
   input: z.object({ provider: providerSchema, agentId: z.string(), accountId: z.string() }),
-  output: z.object({ activeAccountId: z.string(), modelId: z.string(), reloaded: z.boolean() }),
+  output: z.object({ activeAccountId: z.string(), modelId: z.string().nullable(), reloaded: z.boolean() }),
 });
 
 export const setPreferredAccountRpc = defineRpc({

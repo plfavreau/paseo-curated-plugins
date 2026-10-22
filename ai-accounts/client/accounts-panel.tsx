@@ -140,6 +140,8 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
   const allSessions = agent === null;
   const harness: Harness = agent ? harnessFor({ provider: agent.provider ?? "", model: agent.model ?? null }) : { providers: ["anthropic", "openai"], current: null };
   const currentProvider = harness.current;
+  // The default model only applies when an OpenCode conversation switches provider.
+  const usesModelCatalog = !agent || (agent.provider ?? "").startsWith("opencode");
   const isTurnActive = agent?.status === "running" || agent?.status === "initializing";
   const popover = variant === "popover";
   const compact = layout.compact || popover;
@@ -165,13 +167,13 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
   const anthropicModels = useQuery({
     queryKey: ["ai-account-models", "anthropic"],
     queryFn: () => getModelCatalog({ provider: "anthropic" }),
-    enabled: harness.providers.includes("anthropic"),
+    enabled: usesModelCatalog && harness.providers.includes("anthropic"),
     staleTime: 5 * 60_000,
   });
   const openaiModels = useQuery({
     queryKey: ["ai-account-models", "openai"],
     queryFn: () => getModelCatalog({ provider: "openai" }),
-    enabled: harness.providers.includes("openai"),
+    enabled: usesModelCatalog && harness.providers.includes("openai"),
     staleTime: 5 * 60_000,
   });
   const { running: forceRunning, visibleJob: forceJob, dismiss: dismissForceJob } = useForceJob();
@@ -201,7 +203,7 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
     onSuccess: (result, variables) => {
       const catalog = modelCatalogs[variables.provider].data;
       const model = catalog?.models.find((candidate) => candidate.id === result.modelId);
-      setNotice(`Now using ${model?.label ?? result.modelId}.`);
+      if (result.modelId) setNotice(`Now using ${model?.label ?? result.modelId}.`);
       void Promise.all([refresh("anthropic"), refresh("openai")]);
       notifyAccountSwitch({ agentId: variables.agentId, provider: variables.provider });
       onCompleted?.();
@@ -390,6 +392,7 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
           <View key={provider} style={{ gap: 8 }}>
             <SectionHead theme={theme} dense={compact} title={brand.name} leading={<ProviderLogo provider={provider} size={compact ? 18 : 22} />}>
               {currentProvider === provider ? <Tag color={c.foregroundMuted}>Current</Tag> : null}
+              {modelCatalog.data?.models.length ? (
               <Dropdown
                 theme={theme}
                 width={270}
@@ -432,6 +435,7 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
                   );
                 }}
               </Dropdown>
+              ) : null}
             </SectionHead>
 
 

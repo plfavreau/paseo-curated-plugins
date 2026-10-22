@@ -44,6 +44,7 @@ export interface Store {
   /** Manual overrides of a conversation's tier; absent means it is classified automatically. */
   sessionTiers?: Record<string, "careful" | "housekeeping">;
   balanceSettings?: BalanceSettings;
+  claudeLaunches?: Record<string, string>;
 }
 
 export interface BalanceSettings {

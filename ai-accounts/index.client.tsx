@@ -168,9 +168,12 @@ export default function contribute(client: PluginClientContext) {
         const isRecommended = active && active.id === state.recommendedAccountId;
         const blocked = peakUtilization !== null && peakUtilization >= USABILITY_CEILING;
         const showRecommendationStatus = peakUtilization !== null && peakUtilization > 40 && state.recommendedAccountId;
-        const indicator = blocked ? BadDot : showRecommendationStatus ? (isRecommended ? GoodDot : BadDot) : "Gauge";
+        const needsRestart = Boolean(active) && agent.provider.startsWith("claude") && state.launchedAccountId !== active?.id;
+        const indicator = needsRestart || blocked ? BadDot : showRecommendationStatus ? (isRecommended ? GoodDot : BadDot) : "Gauge";
         const name = providerName(provider);
-        const status = blocked
+        const status = needsRestart
+          ? " · not applied yet, open to restart"
+          : blocked
           ? ` · limit reached${state.recovery ? `, ${state.recovery.email} frees up ${countdown(state.recovery.resetsAt) ?? "soon"}` : ""}`
           : showRecommendationStatus
             ? isRecommended

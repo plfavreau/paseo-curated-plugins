@@ -34,9 +34,20 @@ function findOnPath(name: string, fallbacks: string[] = []): string | undefined 
   return undefined;
 }
 
+/** The app ships its CLI inside the bundle the daemon runs from, whether or not it was ever added to PATH. */
+function bundledPaseoCli(): string[] {
+  const bundle = process.execPath.match(/^(.*?\.app)\/Contents\//)?.[1];
+  return [
+    ...(bundle ? [join(bundle, "Contents", "Resources", "bin", "paseo")] : []),
+    "/Applications/Paseo.app/Contents/Resources/bin/paseo",
+    join(homedir(), "Applications", "Paseo.app", "Contents", "Resources", "bin", "paseo"),
+  ];
+}
+
 let paseoCli: string | undefined;
 export function paseoCliPath(): string {
-  paseoCli ??= findOnPath("paseo", [join(homedir(), ".local", "bin", "paseo"), "/opt/homebrew/bin/paseo", "/usr/local/bin/paseo"]) ?? "paseo";
+  paseoCli ??=
+    findOnPath("paseo", [join(homedir(), ".local", "bin", "paseo"), "/opt/homebrew/bin/paseo", "/usr/local/bin/paseo", ...bundledPaseoCli()]) ?? "paseo";
   return paseoCli;
 }
 

@@ -1,4 +1,4 @@
-import { USABILITY_CEILING } from "../shared/contracts";
+import { USABILITY_CEILING } from "../shared/limits";
 import type { AccountProvider, StoredAccount } from "./account-store";
 
 export interface UsageWindow {

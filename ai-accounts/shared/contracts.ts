@@ -1,10 +1,9 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
-export const providerSchema = z.enum(["anthropic", "openai"]);
+export { USABILITY_CEILING } from "./limits";
 
-/** A window at or above this utilization is treated as blocked; the vendor refuses shortly before 100%. */
-export const USABILITY_CEILING = 95;
+export const providerSchema = z.enum(["anthropic", "openai"]);
 
 const usageWindowSchema = z.object({
   label: z.string(),

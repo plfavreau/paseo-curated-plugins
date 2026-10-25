@@ -177,11 +177,17 @@ function parseCallback(input: string): { code: string; state?: string } {
   return { code, state };
 }
 
+const HANDOVER_NOTICE_MS = 24 * 60 * 60 * 1000;
+
+function recentHandover(handover: { plugin: string; config: string; at: string } | undefined) {
+  return handover && Date.now() - Date.parse(handover.at) < HANDOVER_NOTICE_MS ? handover : null;
+}
+
 export async function getAccountState(
   { provider, agentId, refreshUsage: shouldRefresh }: RpcInput<typeof accountStateRpc>,
   context: PluginHandlerContext,
 ) {
-  await migrateOpenCodeAccounts();
+  if ((await migrateOpenCodeAccounts()).length > 0) syncOpenCodePluginsInBackground();
   let store = await readStore();
   if (shouldRefresh) {
     await refreshStaleUsage(store.accounts);
@@ -215,6 +221,7 @@ export async function getAccountState(
       ? `${recommended.email} is furthest behind its ideal usage pace across short and weekly limits.`
       : null,
     preferredAccountId: store.preferredAccountIds?.[provider] ?? null,
+    openCodeHandover: recentHandover(store.openCodeHandovers?.[provider]),
     exhausted: providerAccounts.length > 0 && recovery !== null,
     recovery: recovery
       ? {

@@ -451,6 +451,11 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
               {(state.data?.accounts ?? []).map((account) => renderAccount(provider, account))}
             </Group>
 
+            {state.data?.openCodeHandover ? (
+              <Text style={[ui.footnote, { paddingHorizontal: 2 }]}>
+                {`ai-accounts now handles your OpenCode ${brand.name} login, so it removed ${state.data.openCodeHandover.plugin} from ${state.data.openCodeHandover.config} (a backup sits next to it). Restart open OpenCode conversations.`}
+              </Text>
+            ) : null}
             {state.data?.exhausted && state.data.recovery ? (
               <Text style={[ui.danger, { paddingHorizontal: 2 }]}>
                 {`Every ${brand.name} account is at its limit. ${state.data.recovery.email} frees up ${countdown(state.data.recovery.resetsAt) ?? "soon"}${

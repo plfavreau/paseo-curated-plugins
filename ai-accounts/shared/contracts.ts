@@ -37,6 +37,8 @@ export const accountStateRpc = defineRpc({
     recommendedProvider: providerSchema.nullable(),
     recommendationReason: z.string().nullable(),
     preferredAccountId: z.string().nullable(),
+    /** Set for a day after ai-accounts removed this provider's original auth plugin from the OpenCode config. */
+    openCodeHandover: z.object({ plugin: z.string(), config: z.string(), at: z.string() }).nullable(),
     exhausted: z.boolean(),
     recovery: z
       .object({ accountId: z.string(), email: z.string(), label: z.string(), resetsAt: z.string().nullable() })

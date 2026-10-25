@@ -6,11 +6,11 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { readStore, type AccountProvider } from "./account-store";
-import { PLUGIN_ID, paseoCliPath } from "./environment";
+import { OPENCODE_CONFIG_DIR, PLUGIN_ID, paseoCliPath } from "./environment";
+import { releaseOriginalAuthPlugins } from "./opencode-handover";
 
 const execFileAsync = promisify(execFile);
 const MARKER = "// Written by the ai-accounts Paseo plugin; removed when its last account is.";
-const OPENCODE_CONFIG_DIR = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "opencode");
 const PLUGINS_DIR = join(OPENCODE_CONFIG_DIR, "plugins");
 const SHIMS: Record<AccountProvider, { file: string; entry: string }> = {
   anthropic: { file: "ai-accounts-anthropic.ts", entry: "opencode-plugin.ts" },
@@ -35,18 +35,20 @@ async function listedByHand(): Promise<boolean> {
 
 /**
  * OpenCode loads every file in its global plugins directory, so each provider with a signed-in
- * account gets a one-line re-export there, and loses it when its last account goes.
+ * account gets a one-line re-export there, and loses it when its last account goes. That provider's
+ * original auth plugin then comes out of the user's config, so only one copy renews the login.
  */
 export async function syncOpenCodePlugins(): Promise<void> {
   const root = await installedDirectory();
   if (!root || !existsSync(join(root, SHIMS.anthropic.entry))) return;
   const handListed = await listedByHand();
   const store = await readStore();
+  const signedIn = (Object.keys(SHIMS) as AccountProvider[]).filter((provider) => store.accounts.some((account) => account.provider === provider));
   for (const provider of Object.keys(SHIMS) as AccountProvider[]) {
     const { file, entry } = SHIMS[provider];
     const path = join(PLUGINS_DIR, file);
     const current = await readFile(path, "utf8").catch(() => undefined);
-    const wanted = !handListed && store.accounts.some((account) => account.provider === provider);
+    const wanted = !handListed && signedIn.includes(provider);
     if (!wanted) {
       if (current?.startsWith(MARKER)) await rm(path, { force: true });
       continue;
@@ -57,6 +59,7 @@ export async function syncOpenCodePlugins(): Promise<void> {
     await mkdir(PLUGINS_DIR, { recursive: true });
     await writeFile(path, content);
   }
+  await releaseOriginalAuthPlugins(signedIn);
 }
 
 export function syncOpenCodePluginsInBackground(): void {

@@ -20,6 +20,7 @@ export const DATA_DIR = resolveDataDir();
 export const OPENCODE_DATA_DIR = join(xdgDataHome(), "opencode");
 export const OPENCODE_DB = join(OPENCODE_DATA_DIR, "opencode.db");
 export const OPENCODE_AUTH_PATH = join(OPENCODE_DATA_DIR, "auth.json");
+export const OPENCODE_CONFIG_DIR = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "opencode");
 
 function findOnPath(name: string, fallbacks: string[] = []): string | undefined {
   const dirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);

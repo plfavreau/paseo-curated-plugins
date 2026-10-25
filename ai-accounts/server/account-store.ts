@@ -45,6 +45,8 @@ export interface Store {
   sessionTiers?: Record<string, "careful" | "housekeeping">;
   balanceSettings?: BalanceSettings;
   claudeLaunches?: Record<string, string>;
+  /** When ai-accounts took a provider's login over from OpenCode by removing its original auth plugin. */
+  openCodeHandovers?: Partial<Record<AccountProvider, { plugin: string; config: string; at: string }>>;
 }
 
 export interface BalanceSettings {
@@ -173,19 +175,44 @@ async function anthropicEmail(access: string): Promise<string> {
   return email;
 }
 
-export async function migrateOpenCodeAccounts(): Promise<void> {
-  let auth: Record<string, unknown>;
+type OpenCodeLogin = { type?: string; access?: string; refresh?: string; expires?: number; accountId?: string };
+
+async function readOpenCodeAuth(): Promise<Record<string, unknown> | undefined> {
   try {
-    auth = JSON.parse(await readFile(OPENCODE_AUTH_PATH, "utf8")) as Record<string, unknown>;
+    return JSON.parse(await readFile(OPENCODE_AUTH_PATH, "utf8")) as Record<string, unknown>;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.error("Could not read OpenCode accounts:", error);
-    return;
+    return undefined;
   }
+}
+
+async function openCodeLogin(provider: AccountProvider): Promise<(OpenCodeLogin & { access: string; refresh: string }) | undefined> {
+  const credential = (await readOpenCodeAuth())?.[provider] as OpenCodeLogin | undefined;
+  if (credential?.type !== "oauth" || !credential.access || !credential.refresh) return undefined;
+  return credential as OpenCodeLogin & { access: string; refresh: string };
+}
+
+async function writeOpenCodeLogin(provider: AccountProvider, tokens: { access: string; refresh: string; expires: number }): Promise<void> {
+  const auth = (await readOpenCodeAuth()) ?? {};
+  auth[provider] = { ...(auth[provider] as OpenCodeLogin | undefined), type: "oauth", ...tokens };
+  const tempPath = `${OPENCODE_AUTH_PATH}.${process.pid}.${randomUUID()}.tmp`;
+  const file = await open(tempPath, "wx", 0o600);
+  try {
+    await file.writeFile(`${JSON.stringify(auth, null, 2)}\n`);
+  } finally {
+    await file.close();
+  }
+  await rename(tempPath, OPENCODE_AUTH_PATH);
+}
+
+/** Imports OpenCode's existing logins so nobody signs in twice. Returns the providers it imported. */
+export async function migrateOpenCodeAccounts(): Promise<AccountProvider[]> {
   const store = await readStore();
+  const imported: AccountProvider[] = [];
   for (const provider of ["anthropic", "openai"] as const) {
     if (store.accounts.some((account) => account.provider === provider)) continue;
-    const credential = auth[provider] as { type?: string; access?: string; refresh?: string; expires?: number; accountId?: string };
-    if (credential?.type !== "oauth" || !credential.access || !credential.refresh) continue;
+    const credential = await openCodeLogin(provider);
+    if (!credential) continue;
     try {
       await saveAccount(provider, {
         access: credential.access,
@@ -193,10 +220,12 @@ export async function migrateOpenCodeAccounts(): Promise<void> {
         expires: credential.expires ?? 0,
         externalAccountId: credential.accountId,
       });
+      imported.push(provider);
     } catch (error) {
       console.error(`Could not import the current ${provider} account:`, error);
     }
   }
+  return imported;
 }
 
 export async function saveAccount(
@@ -339,32 +368,81 @@ export async function adoptClaudeRotation(account: StoredAccount): Promise<boole
   return true;
 }
 
+type TokenResponse = { access_token: string; refresh_token?: string; expires_in: number };
+
+function requestRefresh(provider: AccountProvider, refresh: string): Promise<Response> {
+  return provider === "anthropic"
+    ? fetch(ANTHROPIC_TOKEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ grant_type: "refresh_token", refresh_token: refresh, client_id: ANTHROPIC_CLIENT_ID }),
+      })
+    : fetch(OPENAI_TOKEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refresh, client_id: OPENAI_CLIENT_ID }),
+      });
+}
+
+/** A rate limit (429) or request timeout (408) says nothing about the token; other 4xx mean it is dead. */
+function tokenRejected(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 429 && status !== 408;
+}
+
+async function loginEmail(provider: AccountProvider, access: string): Promise<string | undefined> {
+  if (provider === "openai") return openAiIdentity(access).email;
+  return anthropicEmail(access).catch(() => undefined);
+}
+
+/**
+ * An OpenCode session started before ai-accounts took over may still run the original auth plugin,
+ * which rotates OpenCode's copy of the login and strands ours. If that copy is a different token for
+ * this same account, renewing with it recovers the account without a new sign-in.
+ */
+async function adoptOpenCodeRotation(account: StoredAccount): Promise<boolean> {
+  try {
+    const copy = await openCodeLogin(account.provider);
+    if (!copy || copy.refresh === account.refresh) return false;
+    if (account.provider === "openai") {
+      const identity = openAiIdentity(copy.access);
+      if (identity.externalAccountId && account.externalAccountId && identity.externalAccountId !== account.externalAccountId) return false;
+      if (identity.email && identity.email.toLowerCase() !== account.email.toLowerCase()) return false;
+    }
+    const response = await requestRefresh(account.provider, copy.refresh);
+    if (!response.ok) return false;
+    const candidate = structuredClone(account);
+    candidate.refresh = copy.refresh;
+    applyTokens(candidate, (await response.json()) as TokenResponse);
+    const email = await loginEmail(account.provider, candidate.access);
+    if (email?.toLowerCase() !== account.email.toLowerCase()) {
+      // It was another login, and renewing just rotated it, so hand OpenCode the new token.
+      await writeOpenCodeLogin(account.provider, candidate);
+      return false;
+    }
+    Object.assign(account, candidate);
+    return true;
+  } catch (error) {
+    console.error(`Could not recover the ${account.provider} login from OpenCode:`, error);
+    return false;
+  }
+}
+
 async function refreshCredentials(account: StoredAccount): Promise<void> {
   const label = account.provider === "anthropic" ? "Claude" : "Codex";
   if (await adoptClaudeRotation(account)) return;
-  const response =
-    account.provider === "anthropic"
-      ? await fetch(ANTHROPIC_TOKEN_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({ grant_type: "refresh_token", refresh_token: account.refresh, client_id: ANTHROPIC_CLIENT_ID }),
-        })
-      : await fetch(OPENAI_TOKEN_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: account.refresh, client_id: OPENAI_CLIENT_ID }),
-        });
-  if (!response.ok) {
+  const response = await requestRefresh(account.provider, account.refresh);
+  if (response.ok) applyTokens(account, (await response.json()) as TokenResponse);
+  else if (!tokenRejected(response.status)) throw new Error(`${label} token refresh failed (${response.status})`);
+  else if (!(await adoptOpenCodeRotation(account))) {
     // A rejected refresh token never recovers on its own, so record it for the UI instead of throwing
-    // and losing the flag: `withStore` only persists when the mutation returns. A rate limit (429) or
-    // request timeout (408) says nothing about the token, so those stay transient errors.
-    if (response.status >= 400 && response.status < 500 && response.status !== 429 && response.status !== 408) {
-      account.needsReauth = new Date().toISOString();
-      return;
-    }
-    throw new Error(`${label} token refresh failed (${response.status})`);
+    // and losing the flag: `withStore` only persists when the mutation returns.
+    account.needsReauth = new Date().toISOString();
+    return;
   }
-  const body = (await response.json()) as { access_token: string; refresh_token?: string; expires_in: number };
+  if (account.provider === "anthropic" && (await hasNamespace(account.id))) await writeClaudeCredentials(account);
+}
+
+function applyTokens(account: StoredAccount, body: TokenResponse): void {
   account.access = body.access_token;
   account.refresh = body.refresh_token ?? account.refresh;
   account.expires = Date.now() + body.expires_in * 1000;
@@ -377,7 +455,6 @@ async function refreshCredentials(account: StoredAccount): Promise<void> {
   }
   account.updatedAt = new Date().toISOString();
   delete account.needsReauth;
-  if (account.provider === "anthropic" && (await hasNamespace(account.id))) await writeClaudeCredentials(account);
 }
 
 /**

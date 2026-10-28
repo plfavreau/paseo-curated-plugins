@@ -7,6 +7,7 @@ Custom plugins for [Paseo](https://paseo.sh). Each directory is a standalone plu
 | [`image-preview`](./image-preview) | Renders inline thumbnails for image files the agent reads, instead of a plain text row. |
 | [`system-health`](./system-health) | Sidebar pills for CPU, RAM and disk usage, with a Clean button that prompts a session of your choice. |
 | [`ai-accounts`](./ai-accounts) | Sign in several Claude and ChatGPT subscriptions, see their limits, and move conversations between them. |
+| [`pin-notes`](./pin-notes) | Pin notes and links to a conversation, shown as pills above the composer with the page title and favicon. |
 
 ## Install
 
@@ -62,6 +63,14 @@ A sidebar row shows three pills for CPU, RAM and disk usage on the daemon machin
 Tap the row for a popover with the details and a **Clean** button. Clean sends a prompt with the current readings to the session you pick in "Send cleanup prompt to" (searchable, grouped and ordered like the sidebar), so an agent you keep open can run another cleanup round. The plugin never deletes anything itself. The prompt is editable under Settings → Plugins → System health; `{stats}` is replaced with the readings.
 
 On macOS, RAM uses `memory_pressure`, which ignores the file cache macOS counts as used.
+
+## pin-notes
+
+Pin a note or a link to a conversation. Open the Command Center (Ctrl+K, ⌘K on macOS) and run **Pin note** or **Manage pins**: one dialog to add a pin at the top and see, open or unpin your pins below.
+
+Each pin is a pill above the composer. A link pill opens the page and shows its favicon; a note pill opens a popover with the text. When the description holds a URL, the daemon fetches the page once to fill in the title and favicon (a title you type wins).
+
+Pins are stored on the daemon machine in `~/.paseo/plugin-data/pin-notes/pins.json`. Requires Paseo 0.13 or newer.
 
 ## ai-accounts
 

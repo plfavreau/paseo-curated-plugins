@@ -1,0 +1,7 @@
+{
+  "id": "pin-notes",
+  "description": "Pin notes and links to an agent conversation, shown as composer pills",
+  "requirements": {
+    "paseo": ">=0.13.0"
+  }
+}

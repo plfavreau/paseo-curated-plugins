@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -59,6 +59,50 @@ try {
     auth: { set: async () => { throw new Error("Native auth must not be written"); } },
   } };
   const hooks = await broker(input);
+  // OpenCode initializes all auth loaders together, even for an Anthropic request.
+  const originalFetch = globalThis.fetch;
+  let apiNetworkCalls = 0;
+  try {
+    const apiAuth = { type: "api", key: "synthetic-native-api-key" };
+    await writeFile(authPath, JSON.stringify({ openai: apiAuth }));
+    globalThis.fetch = async () => { apiNetworkCalls += 1; throw new Error("API-mode initialization must not contact any provider"); };
+    for (const experimentalWebSockets of [false, true]) {
+      const native = await CodexAuthPlugin(input, { experimentalWebSockets });
+      natives.push(native);
+      const methods = native.auth.methods;
+      const models = { "gpt-5.5": { id: "gpt-5.5", api: { id: "gpt-5.5" }, options: {} } };
+      assert.equal(await native.provider.models({ models }, { auth: apiAuth }), models);
+      const nativeOptions = await native.auth.loader(async () => apiAuth, {});
+      const anthropicOptions = { apiKey: "synthetic-anthropic-key" };
+      const anthropicLoader = async () => anthropicOptions;
+      const initialized = {};
+      // Same sequential, uncaught loader composition as shared provider initialization.
+      for (const [providerID, loader] of [["openai", native.auth.loader], ["anthropic", anthropicLoader]]) {
+        const output = { loader };
+        await hooks["auth.loader"]({ providerID }, output);
+        if (providerID === "anthropic") assert.equal(output.loader, anthropicLoader);
+        initialized[providerID] = await output.loader(async () => apiAuth, {});
+      }
+      const { fetch: nativeFetch, ...expectedOptions } = nativeOptions;
+      const { fetch: brokerFetch, ...actualOptions } = initialized.openai;
+      assert.deepEqual(actualOptions, expectedOptions);
+      assert.equal(typeof brokerFetch, "function");
+      assert.notEqual(brokerFetch, nativeFetch);
+      assert.equal(initialized.anthropic, anthropicOptions);
+      assert.equal(native.auth.methods, methods);
+      await assert.rejects(brokerFetch("https://example.invalid/v1/responses"), /native ChatGPT OAuth login/);
+      for (const hook of ["chat.params", "chat.headers"]) {
+        const output = { headers: { native: "preserved" } };
+        await hooks[hook]({ model: { providerID: "anthropic" } }, output);
+        assert.deepEqual(output, { headers: { native: "preserved" } });
+        await assert.rejects(hooks[hook]({ model: { providerID: "openai" } }, output), /native ChatGPT OAuth login/);
+      }
+    }
+    assert.equal(apiNetworkCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await writeFile(authPath, authBefore);
+  }
   const body = JSON.stringify({ model: "gpt-5.5", stream: true, background: false, store: false,
     instructions: "Native instructions unchanged.\nAGENTS fixture sentinel preserved.",
     tools: [{ type: "function", name: "skill", description: "fixture skill", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"], additionalProperties: false }, strict: true }],
@@ -123,7 +167,7 @@ try {
     assert.equal(entry.affinity, "shared-affinity");
   }
   assert.equal(await readFile(authPath, "utf8"), authBefore);
-  console.log("Native adapter verification passed: real HTTP/WebSockets, unchanged instructions/tools, credential isolation/reuse, account switch, title/failure HTTP fallback, native auth unchanged.");
+  console.log("Native adapter verification passed: API-mode shared loader initialization, Anthropic unaffected, OpenAI-only inference rejection, real HTTP/WebSockets, unchanged instructions/tools, credential isolation/reuse, account switch, title/failure HTTP fallback, native auth unchanged.");
 } finally {
   for (const native of natives) await native.dispose?.();
   await backend?.stop(true);

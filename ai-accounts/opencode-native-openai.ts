@@ -50,7 +50,6 @@ export async function nativeOpenAIAccountBroker(input: PluginInput & { capabilit
       if (providerID !== "openai") return;
       const nativeLoader = output.loader;
       output.loader = async (getAuth, provider) => {
-        await assertNativeOpenAIOAuth(await getAuth());
         const loaders = new Map<string, ReturnType<Loader>>();
         const brokerAuth = async () => {
           const account = context.getStore();
@@ -68,6 +67,7 @@ export async function nativeOpenAIAccountBroker(input: PluginInput & { capabilit
           }
           return loaded;
         };
+        // All providers initialize together; reject API-mode OpenAI only at inference.
         const initialLoaded = await nativeLoader(getAuth, provider);
         return {
           ...initialLoaded,

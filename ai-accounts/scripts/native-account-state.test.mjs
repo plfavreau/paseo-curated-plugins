@@ -12,7 +12,7 @@ const originalFetch = globalThis.fetch;
 // Exercise the real remove handler without touching Paseo or installed provider shims.
 mock.module("../server/opencode-shims", () => ({ syncOpenCodePluginsInBackground() {} }));
 const store = await import("../server/account-store.ts");
-const { removeAccount } = await import("../server/accounts.ts");
+const { getAccountState, removeAccount } = await import("../server/accounts.ts");
 const { nativeOpenAIAccountBroker } = await import("../opencode-native-openai.ts");
 const authPath = join(scratch, "opencode/auth.json");
 const jwt = (email, id, generation = "initial") => `synthetic.${Buffer.from(JSON.stringify({
@@ -34,6 +34,7 @@ beforeEach(async () => {
     current.assignments = {};
     current.defaultAccountIds = {};
     current.preferredAccountIds = {};
+    delete current.dismissedNativeProviders;
   });
   globalThis.fetch = async () => { throw new Error("Unexpected network request"); };
 });
@@ -98,6 +99,48 @@ test("migration still imports a genuine native OAuth login without overwriting i
   const before = await readFile(authPath, "utf8");
   assert.deepEqual(await store.migrateOpenCodeAccounts(), ["openai"]);
   assert.equal((await store.readStore()).accounts[0].externalAccountId, "independent");
+  assert.equal(await readFile(authPath, "utf8"), before);
+});
+
+test("removing an imported native account survives accountState migration until explicit sign-in", async () => {
+  const native = { type: "oauth", ...credentials("independent") };
+  await writeAuth(native);
+  const before = await readFile(authPath, "utf8");
+  const state = () => getAccountState({ provider: "openai", refreshUsage: false }, {});
+  const imported = await state();
+  assert.equal(imported.accounts.length, 1);
+  let sends = 0;
+  const hooks = await nativeOpenAIAccountBroker({ directory: scratch, capabilities: { authLoaderMiddleware: true },
+    client: { session: { get: async () => ({ data: {} }) } },
+  });
+  const output = { loader: async (getAuth) => ({ fetch: async () => {
+    assert.equal((await getAuth()).access, native.access);
+    sends += 1;
+    return new Response("synthetic-native-response");
+  } }) };
+  await hooks["auth.loader"]({ providerID: "openai" }, output);
+  const loaded = await output.loader(async () => (await readAuth()).openai, {});
+  const send = () => loaded.fetch("https://example.invalid/v1/responses");
+  assert.equal((await send()).status, 200);
+  await removeAccount({ provider: "openai", accountId: imported.accounts[0].id });
+  for (const snapshot of await Promise.all(Array.from({ length: 4 }, state))) {
+    assert.deepEqual(snapshot.accounts, []);
+    assert.equal(snapshot.activeAccountId, null);
+  }
+  assert.deepEqual(await store.migrateOpenCodeAccounts(), []);
+  await assert.rejects(send(), /No OpenAI broker account/);
+  assert.equal(sends, 1, "Removed identity must not reach native fetch");
+  assert.equal(await readFile(authPath, "utf8"), before);
+  assert.deepEqual((await store.readStore()).dismissedNativeProviders, ["openai"]);
+  const signedIn = await store.saveAccount("openai", credentials("independent"));
+  assert.ok(!(await store.readStore()).dismissedNativeProviders?.includes("openai"));
+  assert.deepEqual((await state()).accounts.map((account) => account.id), [signedIn.id]);
+  assert.equal((await send()).status, 200);
+  assert.equal(sends, 2);
+  await Promise.all([removeAccount({ provider: "openai", accountId: signedIn.id }), state(), state()]);
+  assert.deepEqual((await state()).accounts, []);
+  await assert.rejects(send(), /No OpenAI broker account/);
+  assert.equal(sends, 2);
   assert.equal(await readFile(authPath, "utf8"), before);
 });
 

@@ -48,6 +48,8 @@ export interface Store {
   claudeLaunches?: Record<string, string>;
   /** When ai-accounts took a provider's login over from OpenCode by removing its original auth plugin. */
   openCodeHandovers?: Partial<Record<AccountProvider, { plugin: string; config: string; at: string }>>;
+  /** User removed the final broker account; do not reimport its independent native login. */
+  dismissedNativeProviders?: AccountProvider[];
 }
 
 export interface BalanceSettings {
@@ -241,11 +243,32 @@ export async function migrateOpenCodeAccounts(): Promise<AccountProvider[]> {
   const store = await readStore();
   const imported: AccountProvider[] = [];
   for (const provider of ["anthropic", "openai"] as const) {
+    if (provider === "openai") {
+      try {
+        const added = await withStore(async (current) => {
+          if (current.dismissedNativeProviders?.includes(provider)) return false;
+          if (current.accounts.some((account) => account.provider === provider)) {
+            await bootstrapNativeOpenAI();
+            return false;
+          }
+          const credential = await openCodeLogin(provider);
+          if (!credential) return false;
+          const identity = openAiIdentity(credential.access);
+          if (!identity.email) throw new Error("The account login did not include an email address");
+          await saveAccountInStore(current, provider, {
+            ...identity, email: identity.email,
+            access: credential.access, refresh: credential.refresh, expires: credential.expires ?? 0,
+            externalAccountId: credential.accountId ?? identity.externalAccountId,
+          });
+          return true;
+        });
+        if (added) imported.push(provider);
+      } catch (error) {
+        console.error(`Could not import the current ${provider} account:`, error);
+      }
+      continue;
+    }
     if (store.accounts.some((account) => account.provider === provider)) {
-      if (provider === "openai") await withStore(async (current) => {
-        const account = current.accounts.find((candidate) => candidate.provider === "openai");
-        if (account) await bootstrapNativeOpenAI();
-      });
       continue;
     }
     const credential = await openCodeLogin(provider);
@@ -275,28 +298,38 @@ export async function saveAccount(
   const externalAccountId = credentials.externalAccountId ?? identity.externalAccountId;
   const plan = credentials.plan ?? identity.plan;
   return withStore(async (store) => {
-    const now = new Date().toISOString();
-    const existing = store.accounts.find(
-      (account) => account.provider === provider && account.email.toLowerCase() === email.toLowerCase() && (!externalAccountId || account.externalAccountId === externalAccountId),
-    );
-    const account: StoredAccount = existing ?? {
-      id: randomUUID(),
-      provider,
-      email,
-      access: credentials.access,
-      refresh: credentials.refresh,
-      expires: credentials.expires,
-      createdAt: now,
-      updatedAt: now,
-    };
-    Object.assign(account, credentials, { provider, email, externalAccountId, plan, updatedAt: now });
-    delete account.needsReauth;
-    if (!existing) store.accounts.push(account);
-    store.defaultAccountIds[provider] ??= account.id;
-    if (provider === "anthropic" && (await hasNamespace(account.id))) await writeClaudeCredentials(account);
-    if (provider === "openai") await bootstrapNativeOpenAI();
+    const account = await saveAccountInStore(store, provider, { ...credentials, email, externalAccountId, plan });
+    if (store.dismissedNativeProviders) {
+      store.dismissedNativeProviders = store.dismissedNativeProviders.filter((dismissed) => dismissed !== provider);
+      if (store.dismissedNativeProviders.length === 0) delete store.dismissedNativeProviders;
+    }
     return account;
   });
+}
+
+async function saveAccountInStore(store: Store, provider: AccountProvider, credentials: Parameters<typeof saveAccount>[1] & { email: string }): Promise<StoredAccount> {
+  const { email, externalAccountId, plan } = credentials;
+  const now = new Date().toISOString();
+  const existing = store.accounts.find(
+    (account) => account.provider === provider && account.email.toLowerCase() === email.toLowerCase() && (!externalAccountId || account.externalAccountId === externalAccountId),
+  );
+  const account: StoredAccount = existing ?? {
+    id: randomUUID(),
+    provider,
+    email,
+    access: credentials.access,
+    refresh: credentials.refresh,
+    expires: credentials.expires,
+    createdAt: now,
+    updatedAt: now,
+  };
+  Object.assign(account, credentials, { provider, email, externalAccountId, plan, updatedAt: now });
+  delete account.needsReauth;
+  if (!existing) store.accounts.push(account);
+  store.defaultAccountIds[provider] ??= account.id;
+  if (provider === "anthropic" && (await hasNamespace(account.id))) await writeClaudeCredentials(account);
+  if (provider === "openai") await bootstrapNativeOpenAI();
+  return account;
 }
 
 export type OwnerKeys = string | string[] | undefined;

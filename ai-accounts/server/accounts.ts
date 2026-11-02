@@ -403,6 +403,8 @@ export async function removeAccount({ provider, accountId }: RpcInput<typeof rem
     }
     if (store.preferredAccountIds?.[provider] === accountId) delete store.preferredAccountIds[provider];
     if (provider === "openai" && store.accounts.length !== before && !store.accounts.some((account) => account.provider === "openai")) {
+      const dismissed = (store.dismissedNativeProviders ??= []);
+      if (!dismissed.includes(provider)) dismissed.push(provider);
       await removeNativeOpenAIBootstrap();
     }
     return { removed: store.accounts.length !== before };

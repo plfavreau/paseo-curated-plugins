@@ -4,7 +4,8 @@
   "version": "0.0.0",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "postinstall": "node scripts/patch-codex-models.mjs"
+    "test": "bun scripts/verify-native-openai.mjs && bun test scripts/native-account-state.test.mjs",
+    "test:native": "bun scripts/verify-native-adapter.mjs"
   },
   "devDependencies": {
     "@getpaseo/plugin": "0.12.0",
@@ -18,8 +19,7 @@
   },
   "dependencies": {
     "@ex-machina/opencode-anthropic-auth": "1.8.6",
-    "@getpaseo/client": "0.12.0",
-    "opencode-openai-codex-auth": "4.4.0"
+    "@getpaseo/client": "0.12.0"
   },
   "files": [
     "paseo-plugin.json",
@@ -29,6 +29,7 @@
     "opencode-auth-wrapper.ts",
     "opencode-plugin.ts",
     "opencode-codex-plugin.ts",
+    "opencode-native-openai.ts",
     "client",
     "server",
     "shared",

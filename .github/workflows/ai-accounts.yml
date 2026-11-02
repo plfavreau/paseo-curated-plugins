@@ -1,0 +1,40 @@
+name: AI accounts
+
+on:
+  pull_request:
+    paths: ["ai-accounts/**", ".github/workflows/ai-accounts.yml"]
+  push:
+    branches: [main]
+    paths: ["ai-accounts/**", ".github/workflows/ai-accounts.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - run: npm ci --include=dev
+        working-directory: ai-accounts
+      - run: npm run typecheck
+        working-directory: ai-accounts
+      - run: npm test
+        working-directory: ai-accounts
+      - uses: actions/checkout@v4
+        with:
+          repository: anomalyco/opencode
+          ref: 774cc7c1914e4329eefde5a669f938b0cf566661
+          path: native-source
+      - run: bun install --frozen-lockfile
+        working-directory: native-source
+      - run: npm run test:native
+        working-directory: ai-accounts
+        env:
+          OPENCODE_SOURCE: ${{ github.workspace }}/native-source

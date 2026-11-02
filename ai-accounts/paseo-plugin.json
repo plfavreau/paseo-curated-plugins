@@ -7,10 +7,6 @@
       "ci",
       "--omit=dev",
       "--ignore-scripts"
-    ],
-    [
-      "node",
-      "scripts/patch-codex-models.mjs"
     ]
   ],
   "requirements": {

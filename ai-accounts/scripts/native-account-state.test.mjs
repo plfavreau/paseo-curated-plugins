@@ -115,9 +115,20 @@ test("API-mode native login rejects OpenAI hooks and fetch before any network", 
     await hooks[hook]({ model: { providerID: "anthropic" } }, output);
     assert.deepEqual(output, { headers: { untouched: "true" } });
   }
-  const output = { loader: async () => ({ fetch: async () => { throw new Error("Native fetch must not run"); } }) };
+  const nativeOptions = { apiKey: "synthetic-native-key", headers: { native: "preserved" }, fetch: async () => { throw new Error("Native fetch must not run"); } };
+  const output = { loader: async () => nativeOptions };
   await hooks["auth.loader"]({ providerID: "openai" }, output);
-  await assert.rejects(output.loader(async () => ({ type: "api", key: "synthetic-native-key" }), {}), /native ChatGPT OAuth login/);
+  const apiLoaded = await output.loader(async () => ({ type: "api", key: "synthetic-native-key" }), {});
+  assert.equal(apiLoaded.apiKey, nativeOptions.apiKey);
+  assert.equal(apiLoaded.headers, nativeOptions.headers);
+  await assert.rejects(apiLoaded.fetch("https://example.invalid/v1/responses"), /native ChatGPT OAuth login/);
+  // Shared provider initialization must continue past OpenAI to Anthropic without a catch.
+  const anthropicOptions = { apiKey: "synthetic-anthropic-key" };
+  const anthropicLoader = async () => anthropicOptions;
+  const anthropic = { loader: anthropicLoader };
+  await hooks["auth.loader"]({ providerID: "anthropic" }, anthropic);
+  assert.equal(anthropic.loader, anthropicLoader);
+  assert.equal(await anthropic.loader(async () => ({ type: "api", key: anthropicOptions.apiKey }), {}), anthropicOptions);
   // A previously loaded OAuth adapter must still refuse if the native file switches to API mode.
   const loaded = await output.loader(async () => ({ type: "oauth", ...credentials() }), {});
   await assert.rejects(loaded.fetch("https://example.invalid/v1/responses"), /native ChatGPT OAuth login/);

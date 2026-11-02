@@ -35,15 +35,30 @@ async function listSessions(paseo: PaseoApi): Promise<Session[]> {
   return rows.map(({ id, title, group }) => ({ id, title, group }));
 }
 
-/** The agent of a workspace that a message should go to: its most recently active one. */
+type AgentRow = { id: string; workspaceId?: string | null; updatedAt?: string; archivedAt?: string | null; status?: string };
+
+/**
+ * The agent of a workspace that a message should go to: its most recently active one.
+ * `agents.list` returns one page, so walk the pages (most recent first) until the workspace shows up.
+ */
 async function latestAgent(paseo: PaseoApi, workspaceId: string): Promise<string> {
-  const { entries } = await paseo.agents.list();
-  const candidates = entries
-    .map(({ agent }) => agent as { id: string; workspaceId?: string | null; updatedAt?: string; archivedAt?: string | null; status?: string })
-    .filter((a) => a.workspaceId === workspaceId && !a.archivedAt && a.status !== "closed")
-    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
-  if (!candidates.length) throw new Error("That session has no active agent anymore. Pick another one.");
-  return candidates[0].id;
+  let cursor: string | undefined;
+  for (let page = 0; page < 20; page += 1) {
+    const result = await paseo.agents.list({
+      sort: [{ key: "updated_at", direction: "desc" }],
+      page: { limit: 100, ...(cursor ? { cursor } : {}) },
+    });
+    // A closed agent is only unloaded, not gone: it is what the sidebar opens and it resumes on send.
+    // Prefer one that is loaded, else take the most recent closed one.
+    const inWorkspace = result.entries
+      .map(({ agent }) => agent as AgentRow)
+      .filter((a) => a.workspaceId === workspaceId && !a.archivedAt);
+    const match = inWorkspace.find((a) => a.status !== "closed") ?? inWorkspace[0];
+    if (match) return match.id;
+    if (!result.pageInfo.hasMore || !result.pageInfo.nextCursor) break;
+    cursor = result.pageInfo.nextCursor;
+  }
+  throw new Error("That session has no agent anymore (all archived). Pick another one.");
 }
 
 export default function contribute(server: PluginServerContext) {

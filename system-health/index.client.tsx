@@ -9,7 +9,7 @@ function HealthItem({ openPopover }: PluginSidebarItemProps) {
 
 export default function contribute(client: PluginClientContext) {
   client.addScreen({ id: "cleanup", title: "Cleanup", Component: CleanupScreen });
-  client.addSidebarHeaderItem({ id: "system-health", title: "System health", Component: HealthItem });
+  client.addSidebarFooterItem({ id: "system-health", title: "System health", Component: HealthItem });
   client.addSettingsScreen({ id: "cleanup", title: "System health", icon: "Activity", Component: CleanupSettings });
   return () => {};
 }

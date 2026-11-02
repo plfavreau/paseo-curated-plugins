@@ -21,6 +21,7 @@ import {
   migrateOpenCodeAccounts,
   readStore,
   refreshStaleUsage,
+  removeNativeOpenAIBootstrap,
   resolveAccount,
   saveAccount,
   setPreferredAccount,
@@ -391,7 +392,7 @@ export async function switchAccount({ provider, agentId, accountId }: RpcInput<t
 }
 
 export async function removeAccount({ provider, accountId }: RpcInput<typeof removeAccountRpc>) {
-  const result = await withStore((store) => {
+  const result = await withStore(async (store) => {
     const before = store.accounts.length;
     store.accounts = store.accounts.filter((account) => account.id !== accountId || account.provider !== provider);
     for (const [agentId, assignedId] of Object.entries(store.assignments)) {
@@ -401,6 +402,9 @@ export async function removeAccount({ provider, accountId }: RpcInput<typeof rem
       store.defaultAccountIds[provider] = store.accounts.find((account) => account.provider === provider)?.id;
     }
     if (store.preferredAccountIds?.[provider] === accountId) delete store.preferredAccountIds[provider];
+    if (provider === "openai" && store.accounts.length !== before && !store.accounts.some((account) => account.provider === "openai")) {
+      await removeNativeOpenAIBootstrap();
+    }
     return { removed: store.accounts.length !== before };
   });
   if (result.removed && provider === "anthropic") await removeNamespace(accountId);

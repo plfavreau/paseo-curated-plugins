@@ -1,4 +1,3 @@
-import { OpenAIAuthPlugin } from "opencode-openai-codex-auth";
-import { wrapAuthPlugin } from "./opencode-auth-wrapper";
+import { nativeOpenAIAccountBroker } from "./opencode-native-openai";
 
-export default wrapAuthPlugin(OpenAIAuthPlugin, "openai");
+export default nativeOpenAIAccountBroker;

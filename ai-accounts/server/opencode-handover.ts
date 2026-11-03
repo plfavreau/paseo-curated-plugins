@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { withStore, type AccountProvider } from "./account-store";
 import { OPENCODE_CONFIG_DIR, PLUGIN_ID } from "./environment";
-import { applyEdits, createScanner, parseTree, SyntaxKind, type ParseError } from "jsonc-parser";
+import { applyEdits, createScanner, parseTree, SyntaxKind, type ParseError } from "jsonc-parser/lib/esm/main.js";
 import { nativeOpenAIStatus } from "./native-openai";
 
 /**

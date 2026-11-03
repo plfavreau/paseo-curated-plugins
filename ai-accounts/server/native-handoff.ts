@@ -19,7 +19,9 @@ export async function openCodeProcessIds(readProcesses = async () => {
     const match = /^\s*(\d+)\s+(.+)$/.exec(line);
     if (!match || !Number.isSafeInteger(Number(match[1])) || Number(match[1]) < 1) throw new Error("Unreadable process inventory");
     if (Number(match[1]) === process.pid) return [];
-    return /(?:^|[/\s])opencode(?:$|[-.\s/])/i.test(match[2]) ? [Number(match[1])] : [];
+    // Match executable names only: a directory named opencode (e.g. a temp dir) is not a server.
+    const isOpenCode = match[2].split(/\s+/).some((token) => /^opencode(?:[-.].*)?$/i.test(token.split("/").pop() ?? ""));
+    return isOpenCode ? [Number(match[1])] : [];
   });
 }
 

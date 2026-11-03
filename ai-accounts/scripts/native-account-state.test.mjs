@@ -347,8 +347,8 @@ test("handoff fails closed for unconfirmed retirement, live servers, failed inve
   assert.equal((await nativeHandoffReadiness(true, async () => [], attest)).ready, true);
 });
 
-test("process gate conservatively detects servers, stock binaries and wrappers but returns no argv", async () => {
-  const pids = await openCodeProcessIds(async () => `123 /owned/bin/opencode /owned/bin/opencode serve --token secret\n124 node node /pkg/opencode/bin/opencode.js serve\n125 /opt/opencode-custom /opt/opencode-custom run\n126 /usr/bin/bun bun scripts/native-handoff.mjs\n${process.pid} opencode opencode\n`);
+test("process gate detects OpenCode executables and wrappers, not opencode directories, and returns no argv", async () => {
+  const pids = await openCodeProcessIds(async () => `123 /owned/bin/opencode /owned/bin/opencode serve --token secret\n124 node node /pkg/opencode/bin/opencode.js serve\n125 /opt/opencode-custom /opt/opencode-custom run\n126 /usr/bin/bun bun scripts/native-handoff.mjs\n127 node node /var/folders/T/opencode/inbox-local-control.mjs serve\n${process.pid} opencode opencode\n`);
   assert.deepEqual(pids, [123, 124, 125]);
   assert.ok(!JSON.stringify(pids).includes("secret"));
   await assert.rejects(() => openCodeProcessIds(async () => ""));

@@ -8,6 +8,7 @@ Custom plugins for [Paseo](https://paseo.sh). Each directory is a standalone plu
 | [`system-health`](./system-health) | Sidebar pills for CPU, RAM and disk usage, with a Clean button that prompts a session of your choice. |
 | [`ai-accounts`](./ai-accounts) | Manage multiple Claude subscriptions; OpenAI uses one native OpenCode account. |
 | [`pin-notes`](./pin-notes) | Pin notes and links to a conversation, shown as pills above the composer with the page title and favicon. |
+| [`opencode-cache-ttl`](./opencode-cache-ttl) | OpenCode plugin (not a Paseo plugin): 1-hour Anthropic prompt cache for main sessions, 5 minutes for subagents. |
 
 ## Install
 
@@ -128,6 +129,17 @@ CI pins Node 22.22.2 and Bun 1.3.14: `npm ci --include=dev`, `npm run typecheck`
 - Logins use the same public OAuth clients as Claude Code and the Codex CLI. Using a subscription outside the vendor's own tools may be against its terms; you decide.
 - Claude tokens are stored in `~/.local/share/ai-accounts/accounts.json` (mode 600) and, for Claude Code, in the macOS Keychain. Removing a Claude account deletes both. Legacy OpenAI records cannot be deleted through this UI.
 - Claude Code reads credentials from a per-account Keychain entry through an undocumented setting, so a Claude Code update could break switching there. `/status` inside Claude Code shows your own email for every account; the account in use is the one the pill shows.
+
+## opencode-cache-ttl
+
+An OpenCode plugin, installed globally so every project on the machine gets it. Main sessions use a 1-hour Anthropic prompt cache, so a 5 to 60 minute pause keeps the cache instead of rewriting the whole prompt; subagents keep the 5-minute default. Other providers are untouched.
+
+```bash
+mkdir -p ~/.config/opencode/plugins
+ln -sf "$PWD/opencode-cache-ttl/cache-ttl-policy.ts" ~/.config/opencode/plugins/cache-ttl-policy.ts
+```
+
+OpenCode loads plugins when a server starts, so restart idle OpenCode servers (or let Paseo start a fresh one) to pick it up. A project that ships its own `.opencode/plugins/cache-ttl-policy.ts`, like the Minitap umbrella, keeps its copy and this one does nothing there. This copy mirrors the umbrella's: change both together.
 
 ## License
 

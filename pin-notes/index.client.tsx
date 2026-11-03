@@ -59,11 +59,31 @@ export default function contribute(client: PluginClientContext) {
     });
   }
 
+  const resolving = new Set<string>();
+
+  function resolveAgentWorkspace(agentId: string) {
+    if (resolving.has(agentId)) return;
+    resolving.add(agentId);
+    void client.paseo.agents
+      .ref(agentId)
+      .refresh()
+      .then((result) => {
+        const workspaceId = result?.agent.workspaceId;
+        if (!workspaceId) return;
+        agentWorkspaces.set(agentId, workspaceId);
+        renderPins();
+      })
+      .catch(() => resolving.delete(agentId));
+  }
+
   function renderPins() {
     const live = new Set<string>();
     for (const pin of getPins()) {
       const workspaceId = agentWorkspaces.get(pin.agentId);
-      if (!workspaceId) continue;
+      if (!workspaceId) {
+        resolveAgentWorkspace(pin.agentId);
+        continue;
+      }
       live.add(pin.id);
       const signature = [workspaceId, pin.title, pin.body, pin.url ?? "", pin.faviconUrl ?? ""].join(
         "\n",
@@ -87,7 +107,7 @@ export default function contribute(client: PluginClientContext) {
     renderPins();
   });
 
-  void client.paseo.agents.list().then(({ entries }) => {
+  void client.paseo.agents.list({ subscribe: {} }).then(({ entries }) => {
     for (const { agent } of entries) {
       if (agent.workspaceId) agentWorkspaces.set(agent.id, agent.workspaceId);
     }

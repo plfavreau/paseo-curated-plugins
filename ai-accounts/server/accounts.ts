@@ -21,7 +21,6 @@ import {
   migrateOpenCodeAccounts,
   readStore,
   refreshStaleUsage,
-  removeNativeOpenAIBootstrap,
   resolveAccount,
   saveAccount,
   setPreferredAccount,
@@ -33,6 +32,7 @@ import { removeNamespace } from "./claude-keychain";
 import { syncOpenCodePluginsInBackground } from "./opencode-shims";
 import { PLUGIN_ID, daemonUrl, paseoCliPath } from "./environment";
 import { nextRecovery, normalizeUsage, recommendAccount, toRecommendationAccount } from "./recommendation";
+import { nativeOpenAIStatus, requireManagedProvider } from "./native-openai";
 
 const SESSION_ID_TTL_MS = 15_000;
 const sessionIds = new Map<string, { sessionId?: string; fetchedAt: number }>();
@@ -54,7 +54,6 @@ async function agentSessionId(context: PluginHandlerContext, agentId?: string): 
 
 const execFileAsync = promisify(execFile);
 const ANTHROPIC_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const STABLE_CWD = homedir();
 const FLAGSHIP: Record<AccountProvider, RegExp> = { anthropic: /opus/i, openai: /^openai\/gpt-\d/i };
 const SMALL = /mini|nano|spark|luna|haiku|flash/i;
@@ -188,13 +187,18 @@ export async function getAccountState(
   { provider, agentId, refreshUsage: shouldRefresh }: RpcInput<typeof accountStateRpc>,
   context: PluginHandlerContext,
 ) {
+  if (provider === "openai") return {
+    accounts: [], nativeOpenAI: await nativeOpenAIStatus(), activeAccountId: null, launchedAccountId: null,
+    recommendedAccountId: null, recommendedProvider: null, recommendationReason: null,
+    preferredAccountId: null, openCodeHandover: null, exhausted: false, recovery: null,
+  };
   if ((await migrateOpenCodeAccounts()).length > 0) syncOpenCodePluginsInBackground();
   let store = await readStore();
   if (shouldRefresh) {
     await refreshStaleUsage(store.accounts);
     store = await readStore();
   }
-  const recommended = recommendAccount(store.accounts.map(toRecommendationAccount));
+  const recommended = recommendAccount(store.accounts.filter((account) => account.provider === "anthropic").map(toRecommendationAccount));
   const providerAccounts = store.accounts.filter((account) => account.provider === provider);
   const ranked = providerAccounts.map(toRecommendationAccount);
   const recovery = recommendAccount(ranked) ? null : nextRecovery(ranked);
@@ -214,6 +218,7 @@ export async function getAccountState(
   }));
   return {
     accounts,
+    nativeOpenAI: null,
     activeAccountId,
     launchedAccountId: agentId ? (store.claudeLaunches?.[agentId] ?? null) : null,
     recommendedAccountId: recommended?.id ?? null,
@@ -236,32 +241,24 @@ export async function getAccountState(
 }
 
 export async function beginLogin({ provider }: RpcInput<typeof beginLoginRpc>) {
+  requireManagedProvider(provider);
   const verifier = base64Url(randomBytes(64));
   const challenge = base64Url(new Uint8Array(await webcrypto.subtle.digest("SHA-256", Buffer.from(verifier))));
   const state = randomUUID().replaceAll("-", "");
   const flowId = randomUUID();
-  const isClaude = provider === "anthropic";
-  const redirectUri = isClaude ? "https://platform.claude.com/oauth/code/callback" : "http://localhost:1455/auth/callback";
-  const url = new URL(isClaude ? "https://claude.ai/oauth/authorize" : "https://auth.openai.com/oauth/authorize");
+  const redirectUri = "https://platform.claude.com/oauth/code/callback";
+  const url = new URL("https://claude.ai/oauth/authorize");
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("client_id", isClaude ? ANTHROPIC_CLIENT_ID : OPENAI_CLIENT_ID);
+  url.searchParams.set("client_id", ANTHROPIC_CLIENT_ID);
   url.searchParams.set("redirect_uri", redirectUri);
   url.searchParams.set(
     "scope",
-    isClaude
-      ? "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
-      : "openid profile email offline_access",
+    "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload",
   );
   url.searchParams.set("code_challenge", challenge);
   url.searchParams.set("code_challenge_method", "S256");
   url.searchParams.set("state", state);
-  if (!isClaude) {
-    url.searchParams.set("id_token_add_organizations", "true");
-    url.searchParams.set("codex_cli_simplified_flow", "true");
-    url.searchParams.set("originator", "codex_cli_rs");
-  } else {
-    url.searchParams.set("code", "true");
-  }
+  url.searchParams.set("code", "true");
   const loginUrl = url.toString();
   pendingLogins.set(flowId, { provider, verifier, state, url: loginUrl, redirectUri, createdAt: Date.now() });
   return { flowId, url: loginUrl, browserOpened: await openDefaultBrowser(loginUrl) };
@@ -291,26 +288,18 @@ export async function completeLogin({ flowId, callback }: RpcInput<typeof comple
   const parsed = parseCallback(callback);
   if (parsed.state && parsed.state !== pending.state) throw new Error("Login state did not match");
   if (pending.provider === "anthropic" && !parsed.state) throw new Error("Claude login requires the code#state value");
-  const isClaude = pending.provider === "anthropic";
-  const response = await fetch(isClaude ? "https://platform.claude.com/v1/oauth/token" : "https://auth.openai.com/oauth/token", {
+  requireManagedProvider(pending.provider);
+  const response = await fetch("https://platform.claude.com/v1/oauth/token", {
     method: "POST",
-    headers: { "Content-Type": isClaude ? "application/json" : "application/x-www-form-urlencoded", Accept: "application/json" },
-    body: isClaude
-      ? JSON.stringify({
-          code: parsed.code,
-          state: parsed.state,
-          grant_type: "authorization_code",
-          client_id: ANTHROPIC_CLIENT_ID,
-          redirect_uri: pending.redirectUri,
-          code_verifier: pending.verifier,
-        })
-      : new URLSearchParams({
-          grant_type: "authorization_code",
-          client_id: OPENAI_CLIENT_ID,
-          code: parsed.code,
-          code_verifier: pending.verifier,
-          redirect_uri: pending.redirectUri,
-        }),
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      code: parsed.code,
+      state: parsed.state,
+      grant_type: "authorization_code",
+      client_id: ANTHROPIC_CLIENT_ID,
+      redirect_uri: pending.redirectUri,
+      code_verifier: pending.verifier,
+    }),
   });
   if (!response.ok) throw new Error(`${providerName(pending.provider)} login failed (${response.status})`);
   const body = (await response.json()) as {
@@ -330,6 +319,7 @@ export async function completeLogin({ flowId, callback }: RpcInput<typeof comple
 }
 
 export async function switchAccount({ provider, agentId, accountId }: RpcInput<typeof switchAccountRpc>) {
+  requireManagedProvider(provider);
   const daemon = createDaemonClient();
   let previousModelId: string | null = null;
   const store = await readStore();
@@ -392,6 +382,7 @@ export async function switchAccount({ provider, agentId, accountId }: RpcInput<t
 }
 
 export async function removeAccount({ provider, accountId }: RpcInput<typeof removeAccountRpc>) {
+  requireManagedProvider(provider);
   const result = await withStore(async (store) => {
     const before = store.accounts.length;
     store.accounts = store.accounts.filter((account) => account.id !== accountId || account.provider !== provider);
@@ -402,11 +393,6 @@ export async function removeAccount({ provider, accountId }: RpcInput<typeof rem
       store.defaultAccountIds[provider] = store.accounts.find((account) => account.provider === provider)?.id;
     }
     if (store.preferredAccountIds?.[provider] === accountId) delete store.preferredAccountIds[provider];
-    if (provider === "openai" && store.accounts.length !== before && !store.accounts.some((account) => account.provider === "openai")) {
-      const dismissed = (store.dismissedNativeProviders ??= []);
-      if (!dismissed.includes(provider)) dismissed.push(provider);
-      await removeNativeOpenAIBootstrap();
-    }
     return { removed: store.accounts.length !== before };
   });
   if (result.removed && provider === "anthropic") await removeNamespace(accountId);
@@ -415,6 +401,7 @@ export async function removeAccount({ provider, accountId }: RpcInput<typeof rem
 }
 
 export async function setPreferred({ provider, accountId }: RpcInput<typeof setPreferredAccountRpc>) {
+  requireManagedProvider(provider);
   await setPreferredAccount(provider, accountId);
   return { preferredAccountId: accountId };
 }
@@ -430,6 +417,7 @@ export async function getModelCatalog({ provider }: RpcInput<typeof modelCatalog
 }
 
 export async function setModelPreference({ provider, modelId }: RpcInput<typeof setPreferredModelRpc>) {
+  requireManagedProvider(provider);
   const models = await availableProviderModels(provider);
   if (!models.some((model) => model.id === modelId)) throw new Error(`${providerName(provider)} model not found`);
   await setPreferredModel(provider, modelId);

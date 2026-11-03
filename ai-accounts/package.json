@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "bun scripts/verify-native-openai.mjs && bun test scripts/native-account-state.test.mjs",
+    "test": "bun test scripts/native-account-state.test.mjs",
     "test:native": "bun scripts/verify-native-adapter.mjs"
   },
   "devDependencies": {
@@ -18,6 +18,7 @@
     "zod": "^4.4.3"
   },
   "dependencies": {
+    "jsonc-parser": "3.3.1",
     "@ex-machina/opencode-anthropic-auth": "1.8.6",
     "@getpaseo/client": "0.12.0"
   },
@@ -29,7 +30,6 @@
     "opencode-auth-wrapper.ts",
     "opencode-plugin.ts",
     "opencode-codex-plugin.ts",
-    "opencode-native-openai.ts",
     "client",
     "server",
     "shared",

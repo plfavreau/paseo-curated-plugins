@@ -42,7 +42,6 @@ export function SessionsOverview({ theme, locked }: { theme: Theme; layout: Plug
     },
   });
   const runPlan = (change: { housekeepingToCodex?: boolean; aiSort?: boolean } = {}) => planner.mutate(change);
-  const settings = planner.data?.settings;
   const applier = useMutation({
     mutationFn: startBalance,
     onSuccess: () => {
@@ -170,21 +169,6 @@ export function SessionsOverview({ theme, locked }: { theme: Theme; layout: Plug
               {plan.busy ? <Text style={ui.danger}>Another switch is already running.</Text> : null}
             </View>
           </View>
-          <Toggle
-            key="housekeeping"
-            theme={theme}
-            label="Send housekeeping to Codex"
-            value={settings?.housekeepingToCodex ?? false}
-            onChange={(value) => runPlan({ housekeepingToCodex: value })}
-          />
-          <Toggle
-            key="ai-sort"
-            theme={theme}
-            label="Sort conversations with a Codex model"
-            hint="One small Codex call per Balance. Off: sorted by title."
-            value={settings?.aiSort ?? false}
-            onChange={(value) => runPlan({ aiSort: value })}
-          />
           <View key="actions" style={[ui.row, { justifyContent: "flex-end", gap: 14 }]}>
             <Button theme={theme} kind="plain" color={c.foregroundMuted} title={plan.moves.length === 0 ? "Close" : "Cancel"} onPress={() => planner.reset()} />
             {plan.moves.length > 0 ? (
@@ -241,21 +225,5 @@ export function SessionsOverview({ theme, locked }: { theme: Theme; layout: Plug
       </Text>
       {error ? <Text style={ui.danger}>{error instanceof Error ? error.message : String(error)}</Text> : null}
     </View>
-  );
-}
-
-function Toggle({ theme, label, hint, value, onChange }: { theme: Theme; label: string; hint?: string; value: boolean; onChange: (value: boolean) => void }) {
-  const ui = useUi(theme);
-  const c = theme.colors;
-  return (
-    <Pressable accessibilityRole="switch" accessibilityState={{ checked: value }} accessibilityLabel={label} onPress={() => onChange(!value)} style={[ui.row, CLICKABLE]}>
-      <View style={{ flex: 1, gap: 2 }}>
-        <Text style={ui.primary}>{label}</Text>
-        {hint ? <Text style={ui.secondary}>{hint}</Text> : null}
-      </View>
-      <View style={{ width: 34, height: 20, borderRadius: 10, padding: 2, backgroundColor: value ? BRAND.openai.accent : c.surface2, alignItems: value ? "flex-end" : "flex-start" }}>
-        <View style={{ width: 16, height: 16, borderRadius: 8, backgroundColor: "#FFFFFF" }} />
-      </View>
-    </Pressable>
   );
 }

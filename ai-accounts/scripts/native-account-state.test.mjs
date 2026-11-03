@@ -1,235 +1,376 @@
 import assert from "node:assert/strict";
 import { afterAll, beforeEach, mock, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parse } from "jsonc-parser";
 
-const scratch = await mkdtemp(join(tmpdir(), "ai-accounts-state-"));
+const scratch = await mkdtemp(join(tmpdir(), "ai-accounts-native-"));
 process.env.XDG_DATA_HOME = scratch;
 process.env.XDG_CONFIG_HOME = join(scratch, "config");
 delete process.env.PASEO_AGENT_ID;
 const originalFetch = globalThis.fetch;
-// Exercise the real remove handler without touching Paseo or installed provider shims.
-mock.module("../server/opencode-shims", () => ({ syncOpenCodePluginsInBackground() {} }));
+const keychainWrites = [];
+mock.module("../server/claude-keychain", () => ({
+  hasNamespace: async () => false,
+  readClaudeCredentials: async () => undefined,
+  writeClaudeCredentials: async (account) => { keychainWrites.push(account.id); },
+  createNamespace: async (id) => `/synthetic/claude/${id}`,
+  removeNamespace: async () => {},
+}));
+let agents = [];
+let rpcCalls = [];
+let rpcResult;
+mock.module("@getpaseo/client/internal/daemon-client", () => ({
+  DaemonClient: class {
+    isConnected = false;
+    async connect() { this.isConnected = true; }
+    async close() { this.isConnected = false; }
+    async fetchAgents() { return { entries: agents.map((agent) => ({ agent })), pageInfo: {} }; }
+    async fetchWorkspaces() { return { entries: [], pageInfo: {} }; }
+    async listProviderModels() { return { models: [] }; }
+    async invokePluginRpc(...args) { rpcCalls.push(args); return rpcResult; }
+  },
+}));
 const store = await import("../server/account-store.ts");
-const { getAccountState, removeAccount } = await import("../server/accounts.ts");
-const { nativeOpenAIAccountBroker } = await import("../opencode-native-openai.ts");
+const accounts = await import("../server/accounts.ts");
+const balance = await import("../server/balance.ts");
+const force = await import("../server/force-account.ts");
+const { syncOpenCodePlugins } = await import("../server/opencode-shims.ts");
+const { withoutPluginEntry } = await import("../server/opencode-handover.ts");
+const { nativeOpenAIStatus } = await import("../server/native-openai.ts");
+const { liveNativeOwnership, nativeHandoffReadiness, openCodeProcessIds } = await import("../server/native-handoff.ts");
+const { prepareClaudeSession } = await import("../server/claude-session.ts");
+const { wrapAuthPlugin } = await import("../opencode-auth-wrapper.ts");
+const { accountStateRpc, nativeOwnershipRpc } = await import("../shared/contracts.ts");
+const configDir = join(scratch, "config/opencode");
 const authPath = join(scratch, "opencode/auth.json");
-const jwt = (email, id, generation = "initial") => `synthetic.${Buffer.from(JSON.stringify({
-  generation,
-  "https://api.openai.com/profile": { email },
-  "https://api.openai.com/auth": { chatgpt_account_id: id, chatgpt_plan_type: "plus" },
-})).toString("base64url")}.unsigned`;
-const credentials = (id = "first", email = `${id}@example.invalid`) => ({
-  access: jwt(email, id), refresh: `synthetic-refresh-${id}`, expires: Date.now() + 3_600_000,
-});
-const writeAuth = (openai) => writeFile(authPath, JSON.stringify({ openai, unrelated: { type: "api", key: "synthetic-unrelated" } }));
-const readAuth = async () => JSON.parse(await readFile(authPath, "utf8"));
-
+const storePath = join(scratch, "ai-accounts/accounts.json");
+const marker = "// Written by the ai-accounts Paseo plugin; removed when its last account is.";
+const legacy = (provider, id = provider) => ({ id, provider, email: `${id}@example.invalid`, access: `synthetic-${id}`, refresh: `synthetic-refresh-${id}`, expires: Date.now() + 3600000, createdAt: "2026-01-01", updatedAt: "2026-01-01" });
+const native = { type: "oauth", access: "synthetic-native", refresh: "synthetic-native-refresh", expires: Date.now() + 3600000 };
+const sentinel = { type: "oauth", access: "", refresh: "", expires: 0, accountId: "ai-accounts-broker-bootstrap" };
+let calls = [];
 beforeEach(async () => {
+  await rm(configDir, { recursive: true, force: true });
+  await mkdir(join(configDir, "plugins"), { recursive: true });
   await mkdir(join(scratch, "opencode"), { recursive: true });
   await rm(authPath, { force: true });
   await store.withStore((current) => {
-    current.accounts = [];
-    current.assignments = {};
-    current.defaultAccountIds = {};
-    current.preferredAccountIds = {};
-    delete current.dismissedNativeProviders;
+    for (const key of Object.keys(current)) delete current[key];
+    Object.assign(current, { version: 2, accounts: [legacy("openai")], assignments: { "openai:agent": "openai" }, defaultAccountIds: { openai: "openai" }, preferredAccountIds: { openai: "openai" }, balanceSettings: { aiSort: true, housekeepingToCodex: true } });
   });
-  globalThis.fetch = async () => { throw new Error("Unexpected network request"); };
+  agents = [];
+  calls = [];
+  rpcCalls = [];
+  rpcResult = undefined;
+  keychainWrites.length = 0;
+  globalThis.fetch = async (url) => { calls.push(String(url)); throw new Error("Unexpected network request"); };
 });
 afterAll(async () => {
   globalThis.fetch = originalFetch;
+  mock.restore();
   await rm(scratch, { recursive: true, force: true });
 });
 
-test("bootstrap contains no real tokens and cannot be reimported", async () => {
-  await store.saveAccount("openai", credentials());
-  const bootstrap = (await readAuth()).openai;
-  assert.equal(bootstrap.type, "oauth");
-  assert.equal(bootstrap.access, "");
-  assert.equal(bootstrap.refresh, "");
-  assert.equal(bootstrap.expires, 0);
-  assert.equal(bootstrap.accountId, "ai-accounts-broker-bootstrap");
-  await store.withStore((current) => { current.accounts = []; });
-  assert.deepEqual(await store.migrateOpenCodeAccounts(), []);
-  assert.equal((await store.readStore()).accounts.length, 0);
-});
-
-test("remove last broker account then migrate does not resurrect it", async () => {
-  const account = await store.saveAccount("openai", credentials());
-  await writeAuth((await readAuth()).openai);
-  assert.deepEqual(await removeAccount({ provider: "openai", accountId: account.id }), { removed: true });
-  assert.deepEqual(await store.migrateOpenCodeAccounts(), []);
-  assert.equal((await store.readStore()).accounts.length, 0);
-  assert.equal((await readAuth()).openai, undefined);
-  assert.deepEqual((await readAuth()).unrelated, { type: "api", key: "synthetic-unrelated" });
-});
-
-test("removing one of several broker accounts retains non-secret activation", async () => {
-  const first = await store.saveAccount("openai", credentials());
-  const second = await store.saveAccount("openai", credentials("second"));
-  await removeAccount({ provider: "openai", accountId: first.id });
-  assert.equal((await readAuth()).openai.accountId, "ai-accounts-broker-bootstrap");
+test("OpenAI UI refresh never imports, rotates, writes auth, or mutates old records", async () => {
+  await writeFile(authPath, JSON.stringify({ openai: native }));
+  const beforeStore = await readFile(storePath, "utf8");
+  const beforeAuth = await readFile(authPath, "utf8");
+  const state = await accounts.getAccountState({ provider: "openai", agentId: "agent", refreshUsage: true }, {});
+  accountStateRpc.output.parse(state);
+  assert.deepEqual(state.accounts, []);
+  assert.equal(state.nativeOpenAI.status, "native-auth-present");
+  assert.equal(state.nativeOpenAI.ownershipVersion, 1);
+  assert.equal(state.activeAccountId, null);
+  assert.equal(store.resolveAccount(await store.readStore(), "openai", "agent"), undefined);
   await store.migrateOpenCodeAccounts();
-  assert.deepEqual((await store.readStore()).accounts.map((account) => account.id), [second.id]);
+  await store.refreshStaleUsage((await store.readStore()).accounts);
+  await store.refreshUsage("openai");
+  assert.equal(await readFile(storePath, "utf8"), beforeStore);
+  assert.equal(await readFile(authPath, "utf8"), beforeAuth);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(keychainWrites, []);
 });
 
-test("saving and removing broker accounts preserves independent native credentials", async () => {
-  for (const native of [{ type: "oauth", ...credentials("independent") }, { type: "api", key: "synthetic-native-key" }]) {
-    await writeAuth(native);
-    const before = await readFile(authPath, "utf8");
-    const account = await store.saveAccount("openai", credentials());
-    assert.equal(await readFile(authPath, "utf8"), before);
-    await removeAccount({ provider: "openai", accountId: account.id });
-    assert.equal(await readFile(authPath, "utf8"), before);
+test("sentinel, empty, missing and malformed native auth require action without restoration", async () => {
+  assert.equal((await nativeOpenAIStatus()).status, "native-login-required");
+  for (const value of [sentinel, { ...sentinel, access: "not-empty" }, {}, { type: "oauth", access: "", refresh: "x", expires: 1 }, { type: "api", key: "" }]) {
+    const text = JSON.stringify({ openai: value, anthropic: { type: "oauth", access: "untouched" } });
+    await writeFile(authPath, text);
+    const status = await nativeOpenAIStatus();
+    assert.equal(status.status, "native-login-required");
+    assert.match(status.message, /opencode auth login/);
+    assert.equal(await readFile(authPath, "utf8"), text);
+  }
+  await writeFile(authPath, "not JSON");
+  assert.equal((await nativeOpenAIStatus()).status, "unreadable");
+  assert.deepEqual(calls, []);
+});
+
+test("independent OAuth (including expired but refreshable) and API auth are preserved", async () => {
+  for (const login of [native, { ...native, expires: 1 }, { type: "api", key: "synthetic-key" }]) {
+    const text = JSON.stringify({ openai: login, another: { key: "synthetic-other" } });
+    await writeFile(authPath, text);
+    assert.equal((await nativeOpenAIStatus()).status, "native-auth-present");
+    await accounts.getAccountState({ provider: "openai", refreshUsage: true }, {});
+    assert.equal(await readFile(authPath, "utf8"), text);
   }
 });
 
-test("native login replacing the sentinel is preserved when the last broker account is removed", async () => {
-  const account = await store.saveAccount("openai", credentials());
-  await writeAuth({ type: "oauth", ...credentials("independent") });
-  const before = await readFile(authPath, "utf8");
-  await removeAccount({ provider: "openai", accountId: account.id });
-  assert.equal(await readFile(authPath, "utf8"), before);
-});
-
-test("migration still imports a genuine native OAuth login without overwriting it", async () => {
-  await writeAuth({ type: "oauth", ...credentials("independent") });
-  const before = await readFile(authPath, "utf8");
-  assert.deepEqual(await store.migrateOpenCodeAccounts(), ["openai"]);
-  assert.equal((await store.readStore()).accounts[0].externalAccountId, "independent");
-  assert.equal(await readFile(authPath, "utf8"), before);
-});
-
-test("removing an imported native account survives accountState migration until explicit sign-in", async () => {
-  const native = { type: "oauth", ...credentials("independent") };
-  await writeAuth(native);
-  const before = await readFile(authPath, "utf8");
-  const state = () => getAccountState({ provider: "openai", refreshUsage: false }, {});
-  const imported = await state();
-  assert.equal(imported.accounts.length, 1);
-  let sends = 0;
-  const hooks = await nativeOpenAIAccountBroker({ directory: scratch, capabilities: { authLoaderMiddleware: true },
-    client: { session: { get: async () => ({ data: {} }) } },
-  });
-  const output = { loader: async (getAuth) => ({ fetch: async () => {
-    assert.equal((await getAuth()).access, native.access);
-    sends += 1;
-    return new Response("synthetic-native-response");
-  } }) };
-  await hooks["auth.loader"]({ providerID: "openai" }, output);
-  const loaded = await output.loader(async () => (await readAuth()).openai, {});
-  const send = () => loaded.fetch("https://example.invalid/v1/responses");
-  assert.equal((await send()).status, 200);
-  await removeAccount({ provider: "openai", accountId: imported.accounts[0].id });
-  for (const snapshot of await Promise.all(Array.from({ length: 4 }, state))) {
-    assert.deepEqual(snapshot.accounts, []);
-    assert.equal(snapshot.activeAccountId, null);
+test("handoff CLI cannot claim readiness from disk auth without explicit retirement confirmation", async () => {
+  for (const login of [sentinel, native]) {
+    const text = JSON.stringify({ openai: login });
+    await writeFile(authPath, text);
+    const child = Bun.spawn([process.execPath, "scripts/native-handoff.mjs"], { cwd: new URL("..", import.meta.url).pathname, env: process.env, stdout: "pipe", stderr: "pipe" });
+    const output = await new Response(child.stdout).text();
+    assert.equal(await child.exited, 2);
+    assert.equal(JSON.parse(output).reason, "legacy-retirement-unconfirmed");
+    assert.ok(!output.includes("synthetic-native"));
+    assert.equal(await readFile(authPath, "utf8"), text);
   }
-  assert.deepEqual(await store.migrateOpenCodeAccounts(), []);
-  await assert.rejects(send(), /No OpenAI broker account/);
-  assert.equal(sends, 1, "Removed identity must not reach native fetch");
-  assert.equal(await readFile(authPath, "utf8"), before);
-  assert.deepEqual((await store.readStore()).dismissedNativeProviders, ["openai"]);
-  const signedIn = await store.saveAccount("openai", credentials("independent"));
-  assert.ok(!(await store.readStore()).dismissedNativeProviders?.includes("openai"));
-  assert.deepEqual((await state()).accounts.map((account) => account.id), [signedIn.id]);
-  assert.equal((await send()).status, 200);
-  assert.equal(sends, 2);
-  await Promise.all([removeAccount({ provider: "openai", accountId: signedIn.id }), state(), state()]);
-  assert.deepEqual((await state()).accounts, []);
-  await assert.rejects(send(), /No OpenAI broker account/);
-  assert.equal(sends, 2);
-  assert.equal(await readFile(authPath, "utf8"), before);
 });
 
-test("API-mode native login rejects OpenAI hooks and fetch before any network", async () => {
-  await writeAuth({ type: "api", key: "synthetic-native-key" });
-  await store.saveAccount("openai", credentials());
-  const before = await readFile(authPath, "utf8");
-  const hooks = await nativeOpenAIAccountBroker({ directory: scratch, capabilities: { authLoaderMiddleware: true },
-    client: { session: { get: async () => { throw new Error("Session lookup must not run"); } } },
-  });
-  for (const hook of ["chat.params", "chat.headers"]) {
-    const output = { headers: { untouched: "true" } };
-    assert.equal(typeof hooks[hook], "function");
-    await assert.rejects(hooks[hook]({ model: { providerID: "openai" } }, output), /native ChatGPT OAuth login/);
-    await hooks[hook]({ model: { providerID: "anthropic" } }, output);
-    assert.deepEqual(output, { headers: { untouched: "true" } });
-  }
-  const nativeOptions = { apiKey: "synthetic-native-key", headers: { native: "preserved" }, fetch: async () => { throw new Error("Native fetch must not run"); } };
-  const output = { loader: async () => nativeOptions };
-  await hooks["auth.loader"]({ providerID: "openai" }, output);
-  const apiLoaded = await output.loader(async () => ({ type: "api", key: "synthetic-native-key" }), {});
-  assert.equal(apiLoaded.apiKey, nativeOptions.apiKey);
-  assert.equal(apiLoaded.headers, nativeOptions.headers);
-  await assert.rejects(apiLoaded.fetch("https://example.invalid/v1/responses"), /native ChatGPT OAuth login/);
-  // Shared provider initialization must continue past OpenAI to Anthropic without a catch.
-  const anthropicOptions = { apiKey: "synthetic-anthropic-key" };
-  const anthropicLoader = async () => anthropicOptions;
-  const anthropic = { loader: anthropicLoader };
-  await hooks["auth.loader"]({ providerID: "anthropic" }, anthropic);
-  assert.equal(anthropic.loader, anthropicLoader);
-  assert.equal(await anthropic.loader(async () => ({ type: "api", key: anthropicOptions.apiKey }), {}), anthropicOptions);
-  // A previously loaded OAuth adapter must still refuse if the native file switches to API mode.
-  const loaded = await output.loader(async () => ({ type: "oauth", ...credentials() }), {});
-  await assert.rejects(loaded.fetch("https://example.invalid/v1/responses"), /native ChatGPT OAuth login/);
-  assert.equal(await readFile(authPath, "utf8"), before);
-});
-
-test("rejected broker refresh recovers only the same native identity", async () => {
-  const account = await store.saveAccount("openai", credentials());
-  const native = { type: "oauth", ...credentials(), access: jwt(account.email, "first", "newer-native"), refresh: "synthetic-newer-native" };
-  await writeAuth(native);
-  const before = await readFile(authPath, "utf8");
-  const refreshes = [];
-  globalThis.fetch = async (_url, init) => {
-    const refresh = init.body.get("refresh_token");
-    refreshes.push(refresh);
-    return refresh === account.refresh ? new Response(null, { status: 400 }) : Response.json({
-      access_token: jwt(account.email, "first", "recovered"), refresh_token: "synthetic-recovered", expires_in: 3600,
-    });
+test("Claude UI refresh polls only Claude and leaves old OpenAI records intact", async () => {
+  const original = (await store.readStore()).accounts[0];
+  await store.withStore((current) => current.accounts.push(legacy("anthropic")));
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    assert.equal(url, "https://api.anthropic.com/api/oauth/usage");
+    return Response.json({ five_hour: { utilization: 10, resets_at: "2026-12-01T00:00:00Z" } });
   };
-  const recovered = await store.forceRefreshAccountById("openai", account.id, account.access);
-  assert.equal(recovered.id, account.id);
-  assert.equal(recovered.externalAccountId, "first");
-  assert.equal(recovered.refresh, "synthetic-recovered");
-  assert.equal(recovered.needsReauth, undefined);
-  assert.deepEqual(refreshes, [account.refresh, native.refresh]);
-  assert.equal(await readFile(authPath, "utf8"), before);
+  const state = await accounts.getAccountState({ provider: "anthropic", refreshUsage: true }, {});
+  accountStateRpc.output.parse(state);
+  assert.equal(state.accounts.length, 1);
+  assert.equal(state.accounts[0].provider, "anthropic");
+  assert.equal(state.nativeOpenAI, null);
+  assert.equal(calls.length, 1);
+  assert.deepEqual((await store.readStore()).accounts.find((account) => account.id === original.id), original);
 });
 
-test("different or unproven native identities cannot recover a broker account", async () => {
-  const account = await store.saveAccount("openai", credentials());
-  for (const access of [jwt(account.email, "other-workspace"), jwt("other@example.invalid", "first"), "synthetic-no-identity"]) {
-    await store.withStore((current) => { delete current.accounts[0].needsReauth; });
-    await writeAuth({ type: "oauth", access, refresh: "synthetic-other-native", expires: Date.now() + 7_200_000 });
-    const before = await readFile(authPath, "utf8");
-    let refreshes = 0;
-    globalThis.fetch = async () => { refreshes += 1; return new Response(null, { status: 400 }); };
-    await assert.rejects(store.forceRefreshAccountById("openai", account.id, account.access), /requires sign-in/);
-    assert.equal(refreshes, 1, "Do not rotate a different or unproven native identity");
-    const current = (await store.readStore()).accounts[0];
-    assert.equal(current.access, account.access);
-    assert.equal(current.externalAccountId, "first");
-    assert.equal(await readFile(authPath, "utf8"), before);
+test("all old OpenAI mutation and credential entry points refuse before side effects", async () => {
+  const before = await readFile(storePath, "utf8");
+  for (const run of [
+    () => accounts.beginLogin({ provider: "openai" }),
+    () => accounts.switchAccount({ provider: "openai", agentId: "agent", accountId: "openai" }),
+    () => accounts.removeAccount({ provider: "openai", accountId: "openai" }),
+    () => accounts.setPreferred({ provider: "openai", accountId: "openai" }),
+    () => accounts.setModelPreference({ provider: "openai", modelId: "openai/gpt-5" }),
+    () => store.saveAccount("openai", native),
+    () => store.ensureFreshAccount("openai"),
+    () => store.forceRefreshAccount("openai"),
+    () => store.selectedAccount("openai"),
+    () => force.planForce({ provider: "openai", accountId: "openai" }),
+    () => force.startForce({ provider: "openai", accountId: "openai" }),
+    () => balance.planBalance({ aiSort: true }),
+    () => balance.planBalance({ housekeepingToCodex: true }),
+    () => balance.startBalance({ moves: [{ agentId: "agent", accountId: "openai" }] }),
+  ]) await assert.rejects(run, /native|OpenAI/);
+  assert.equal(await readFile(storePath, "utf8"), before);
+  assert.deepEqual(calls, []);
+});
+
+test("health, sessions and Balance exclude legacy OpenAI despite persisted old settings", async () => {
+  agents = [{ id: "agent", provider: "opencode", model: "openai/gpt-5", status: "idle" }];
+  const before = await readFile(storePath, "utf8");
+  assert.deepEqual((await balance.getSessions({})).accounts, []);
+  assert.deepEqual((await balance.getSessions({})).sessions, []);
+  const plan = await balance.planBalance({});
+  assert.deepEqual(plan.settings, { housekeepingToCodex: false, aiSort: false });
+  assert.deepEqual(plan.moves, []);
+  assert.equal((await balance.getHealth({})).moves, 0);
+  assert.equal(await readFile(storePath, "utf8"), before);
+  assert.deepEqual(calls, []);
+});
+
+test("startup removes only owned Codex shim, even without an installed source", async () => {
+  await writeFile(authPath, JSON.stringify({ openai: native }));
+  const shim = join(configDir, "plugins/ai-accounts-codex.ts");
+  const claude = join(configDir, "plugins/ai-accounts-anthropic.ts");
+  await writeFile(shim, `${marker}\nexport { default } from 'old';\n`);
+  await writeFile(claude, "unowned Claude shim");
+  await syncOpenCodePlugins(async () => undefined);
+  await assert.rejects(readFile(shim), { code: "ENOENT" });
+  assert.equal(await readFile(claude, "utf8"), "unowned Claude shim");
+  await writeFile(shim, "// user-owned file\n");
+  await syncOpenCodePlugins(async () => undefined);
+  assert.equal(await readFile(shim, "utf8"), "// user-owned file\n");
+});
+
+test("startup explicitly reports a sentinel as native-login-required, without repairing it", async () => {
+  const text = JSON.stringify({ openai: sentinel });
+  await writeFile(authPath, text);
+  const errors = [];
+  const originalError = console.error;
+  console.error = (...args) => errors.push(args.join(" "));
+  try {
+    await syncOpenCodePlugins(async () => undefined);
+  } finally {
+    console.error = originalError;
+  }
+  assert.ok(errors.some((line) => line.includes("native-login-required") && line.includes("opencode auth login")));
+  assert.equal(await readFile(authPath, "utf8"), text);
+  assert.deepEqual(calls, []);
+});
+
+test("sync never recreates Codex shim and preserves Claude install and records", async () => {
+  await store.withStore((current) => current.accounts.push(legacy("anthropic")));
+  const before = await readFile(storePath, "utf8");
+  const source = join(scratch, "source");
+  await mkdir(source, { recursive: true });
+  await writeFile(join(source, "opencode-plugin.ts"), "// fixture");
+  await syncOpenCodePlugins(async () => source);
+  assert.match(await readFile(join(configDir, "plugins/ai-accounts-anthropic.ts"), "utf8"), /opencode-plugin\.ts/);
+  await assert.rejects(readFile(join(configDir, "plugins/ai-accounts-codex.ts")), { code: "ENOENT" });
+  assert.equal(await readFile(storePath, "utf8"), before);
+});
+
+test("handover removes only matching plugin entries, with backup and JSONC comments intact", async () => {
+  await writeFile(authPath, JSON.stringify({ openai: native }));
+  const text = '{\n// opencode-openai-codex-auth is retired\n"plugin": ["other", "opencode-openai-codex-auth@1.2.3", "file:///x/ai-accounts/opencode-codex-plugin.ts", "@ex-machina/opencode-anthropic-auth"],\n"description": "opencode-openai-codex-auth",\n}';
+  const path = join(configDir, "opencode.jsonc");
+  await writeFile(path, text);
+  await syncOpenCodePlugins(async () => undefined);
+  const after = await readFile(path, "utf8");
+  assert.deepEqual(parse(after).plugin, ["other", "@ex-machina/opencode-anthropic-auth"]);
+  assert.equal(parse(after).description, "opencode-openai-codex-auth");
+  assert.match(after, /\/\/ opencode-openai-codex-auth is retired/);
+  const backups = (await readdir(configDir)).filter((name) => name.includes(".bak-ai-accounts-"));
+  assert.equal(backups.length, 1);
+  assert.equal(await readFile(join(configDir, backups[0]), "utf8"), text);
+  await syncOpenCodePlugins(async () => undefined);
+  assert.equal((await readdir(configDir)).filter((name) => name.includes(".bak-ai-accounts-")).length, 1);
+  for (const invalid of ['{"plugin": ["opencode-openai-codex-auth"', '{"plugin":[],"plugin":["opencode-openai-codex-auth"]}']) {
+    assert.equal(withoutPluginEntry(invalid, "opencode-openai-codex-auth"), invalid);
   }
 });
 
-test("native recovery validates the refreshed identity, including same-email workspace changes", async () => {
-  const account = await store.saveAccount("openai", credentials());
-  await writeAuth({ type: "oauth", ...credentials(), refresh: "synthetic-newer-native" });
-  const before = await readFile(authPath, "utf8");
-  let refreshes = 0;
-  globalThis.fetch = async () => {
-    refreshes += 1;
-    return refreshes === 1 ? new Response(null, { status: 400 }) : Response.json({
-      access_token: jwt(account.email, "other-workspace", "refreshed"), refresh_token: "synthetic-other-workspace", expires_in: 3600,
-    });
+test("missing, sentinel and unreadable auth preserve OpenAI shim/config while Claude synchronization continues", async () => {
+  const shim = join(configDir, "plugins/ai-accounts-codex.ts");
+  const owned = `${marker}\nexport { default } from 'old-broker';\n`;
+  const path = join(configDir, "opencode.json");
+  const plugins = ["other", "opencode-openai-codex-auth", "file:///x/ai-accounts/opencode-codex-plugin.ts", "@ex-machina/opencode-anthropic-auth"];
+  const source = join(scratch, "claude-source");
+  await mkdir(source, { recursive: true });
+  await writeFile(join(source, "opencode-plugin.ts"), "// fixture");
+  await store.withStore((current) => current.accounts.push(legacy("anthropic")));
+  const originalOpenAI = (await store.readStore()).accounts.find((account) => account.id === "openai");
+  for (const auth of [undefined, JSON.stringify({ openai: sentinel }), "malformed JSON"]) {
+    if (auth === undefined) await rm(authPath, { force: true });
+    else await writeFile(authPath, auth);
+    await writeFile(shim, owned);
+    await writeFile(path, JSON.stringify({ plugin: plugins, keep: true }));
+    await syncOpenCodePlugins(async () => undefined);
+    assert.equal(await readFile(shim, "utf8"), owned);
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")).plugin, plugins);
+    await syncOpenCodePlugins(async () => source);
+    assert.equal(await readFile(shim, "utf8"), owned);
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")).plugin, plugins.slice(0, -1));
+    assert.match(await readFile(join(configDir, "plugins/ai-accounts-anthropic.ts"), "utf8"), /opencode-plugin\.ts/);
+    if (auth !== undefined) assert.equal(await readFile(authPath, "utf8"), auth);
+    assert.deepEqual((await store.readStore()).accounts.find((account) => account.id === "openai"), originalOpenAI);
+  }
+  assert.deepEqual(calls, []);
+});
+
+test("live ownership probe invokes only the dedicated read-only RPC and rejects older runtimes", async () => {
+  await writeFile(authPath, JSON.stringify({ openai: native }));
+  rpcResult = await nativeOpenAIStatus();
+  const before = await readFile(storePath, "utf8");
+  const result = await liveNativeOwnership();
+  assert.equal(result.ownershipVersion, 1);
+  assert.deepEqual(rpcCalls, [["ai-accounts", "ai-accounts.native-ownership", {}]]);
+  assert.equal(nativeOwnershipRpc.name, "ai-accounts.native-ownership");
+  rpcResult = { status: "native-auth-present", message: "old runtime" };
+  await assert.rejects(liveNativeOwnership);
+  rpcResult = { ownershipVersion: 2, status: "native-auth-present", message: "unknown version" };
+  await assert.rejects(liveNativeOwnership);
+  assert.equal(await readFile(storePath, "utf8"), before);
+  assert.deepEqual(calls, []);
+});
+
+test("handoff fails closed for unconfirmed retirement, live servers, failed inventory or stale plugin", async () => {
+  const ownership = { ownershipVersion: 1, status: "native-auth-present", message: "fixture" };
+  let probes = 0;
+  const attest = async () => { probes++; return ownership; };
+  assert.equal((await nativeHandoffReadiness(false, async () => [], attest)).reason, "legacy-retirement-unconfirmed");
+  assert.equal((await nativeHandoffReadiness(true, async () => [123], attest)).reason, "opencode-processes-present");
+  assert.equal((await nativeHandoffReadiness(true, async () => { throw new Error("ps failed"); }, attest)).reason, "process-inspection-unavailable");
+  assert.equal(probes, 0);
+  for (const bad of [{ status: "native-auth-present", message: "no version" }, { ownershipVersion: 2, status: "native-auth-present", message: "future" }]) {
+    assert.equal((await nativeHandoffReadiness(true, async () => [], async () => bad)).reason, "live-ownership-unattested");
+  }
+  assert.equal((await nativeHandoffReadiness(true, async () => [], async () => { throw new Error("unknown RPC"); })).ready, false);
+  for (const status of ["native-login-required", "unreadable"]) {
+    assert.equal((await nativeHandoffReadiness(true, async () => [], async () => ({ ...ownership, status }))).ready, false);
+  }
+  assert.equal((await nativeHandoffReadiness(true, async () => [], attest)).ready, true);
+});
+
+test("process gate conservatively detects servers, stock binaries and wrappers but returns no argv", async () => {
+  const pids = await openCodeProcessIds(async () => `123 /owned/bin/opencode /owned/bin/opencode serve --token secret\n124 node node /pkg/opencode/bin/opencode.js serve\n125 /opt/opencode-custom /opt/opencode-custom run\n126 /usr/bin/bun bun scripts/native-handoff.mjs\n${process.pid} opencode opencode\n`);
+  assert.deepEqual(pids, [123, 124, 125]);
+  assert.ok(!JSON.stringify(pids).includes("secret"));
+  await assert.rejects(() => openCodeProcessIds(async () => ""));
+  await assert.rejects(() => openCodeProcessIds(async () => "unparseable inventory"));
+});
+
+test("scoped JSONC cleanup removes first, middle, final and duplicate entries without corrupting JSON", () => {
+  for (const plugins of [
+    ["opencode-openai-codex-auth"],
+    ["opencode-openai-codex-auth", "keep"],
+    ["keep", "opencode-openai-codex-auth"],
+    ["before", "opencode-openai-codex-auth", "after"],
+    ["opencode-openai-codex-auth", "opencode-openai-codex-auth"],
+  ]) {
+    const cleaned = withoutPluginEntry(JSON.stringify({ plugin: plugins, keep: true }), "opencode-openai-codex-auth");
+    assert.deepEqual(JSON.parse(cleaned), { plugin: plugins.filter((item) => item !== "opencode-openai-codex-auth"), keep: true });
+  }
+  const commented = '{"plugin": ["keep", /* keep comment */ "opencode-openai-codex-auth",], "keep": true}';
+  const cleaned = withoutPluginEntry(commented, "opencode-openai-codex-auth");
+  assert.deepEqual(parse(cleaned), { plugin: ["keep"], keep: true });
+  assert.match(cleaned, /keep comment/);
+});
+
+test("retired manual entry is empty on stock OpenCode, no interception or capability requirement", async () => {
+  const { default: retired } = await import("../opencode-codex-plugin.ts");
+  assert.deepEqual(await retired({}), {});
+  assert.deepEqual(calls, []);
+});
+
+test("Claude account selection, refresh and session preparation still use the assigned account", async () => {
+  const originalOpenAI = (await store.readStore()).accounts.find((account) => account.id === "openai");
+  const a = legacy("anthropic", "claude-a");
+  const b = legacy("anthropic", "claude-b");
+  b.expires = 0;
+  await store.withStore((current) => {
+    current.accounts.push(a, b);
+    current.assignments["anthropic:agent"] = b.id;
+  });
+  globalThis.fetch = async (url, init) => {
+    calls.push(String(url));
+    assert.equal(url, "https://platform.claude.com/v1/oauth/token");
+    assert.equal(JSON.parse(init.body).refresh_token, b.refresh);
+    return Response.json({ access_token: "synthetic-new-claude", refresh_token: "synthetic-new-refresh", expires_in: 3600 });
   };
-  await assert.rejects(store.forceRefreshAccountById("openai", account.id, account.access), /requires sign-in/);
-  assert.equal(refreshes, 2);
-  assert.equal((await store.readStore()).accounts[0].externalAccountId, "first");
-  assert.equal(await readFile(authPath, "utf8"), before);
+  const request = { provider: "claude", purpose: "interactive", agentId: "agent", env: { KEEP: "yes" } };
+  const prepared = await prepareClaudeSession(request);
+  assert.deepEqual(prepared.env, { KEEP: "yes", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/synthetic/claude/claude-b" });
+  assert.deepEqual(keychainWrites, [b.id]);
+  const current = await store.readStore();
+  assert.equal(current.claudeLaunches.agent, b.id);
+  assert.equal(current.accounts.find((account) => account.id === b.id).access, "synthetic-new-claude");
+  assert.deepEqual(current.accounts.find((account) => account.id === "openai"), originalOpenAI);
+});
+
+test("Claude wrapper still substitutes assigned auth and leaves native OpenAI session prep alone", async () => {
+  const a = legacy("anthropic");
+  await store.withStore((current) => { current.accounts.push(a); current.assignments["anthropic:ses_test"] = a.id; });
+  let seen;
+  const plugin = wrapAuthPlugin(async () => ({ auth: { loader: async (getAuth) => ({ fetch: async () => { seen = await getAuth(); return new Response("ok"); } }) } }), "anthropic");
+  const hooks = await plugin({ directory: scratch, client: { session: { get: async () => ({ data: {} }) }, auth: { set: async () => { throw new Error("must stay in broker store"); } } } });
+  const loaded = await hooks.auth.loader(async () => { throw new Error("must use assigned Claude account"); }, {});
+  await loaded.fetch("https://example.invalid", { headers: { "x-paseo-opencode-session": "ses_test" } });
+  assert.equal(seen.access, a.access);
+  assert.equal(await prepareClaudeSession({ provider: "opencode", purpose: "interactive", agentId: "agent" }), undefined);
 });

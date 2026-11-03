@@ -5,6 +5,19 @@ export { USABILITY_CEILING } from "./limits";
 
 export const providerSchema = z.enum(["anthropic", "openai"]);
 
+export const nativeOwnershipSchema = z.object({
+  ownershipVersion: z.literal(1),
+  status: z.enum(["native-auth-present", "native-login-required", "unreadable"]),
+  message: z.string(),
+});
+
+/** Dedicated read-only probe: older runtimes reject it without running their state migration. */
+export const nativeOwnershipRpc = defineRpc({
+  name: "ai-accounts.native-ownership",
+  input: z.object({}),
+  output: nativeOwnershipSchema,
+});
+
 const usageWindowSchema = z.object({
   label: z.string(),
   utilization: z.number(),
@@ -30,6 +43,7 @@ export const accountStateRpc = defineRpc({
   input: z.object({ provider: providerSchema, agentId: z.string().optional(), refreshUsage: z.boolean().default(false) }),
   output: z.object({
     accounts: z.array(accountSchema),
+    nativeOpenAI: nativeOwnershipSchema.nullable(),
     activeAccountId: z.string().nullable(),
     /** The account a Claude Code conversation's running process was started with; null when it predates the plugin. */
     launchedAccountId: z.string().nullable(),

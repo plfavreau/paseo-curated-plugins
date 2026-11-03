@@ -17,7 +17,14 @@ function groupFor(status: string, pinnedAt: string | null | undefined): Group {
 
 /** Workspaces as the sidebar lists them: pinned first, then by status, newest status change first. */
 async function listSessions(paseo: PaseoApi): Promise<Session[]> {
-  const { entries } = await paseo.workspaces.list();
+  const entries = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < 20; page += 1) {
+    const result = await paseo.workspaces.list({ page: { limit: 200, ...(cursor ? { cursor } : {}) } });
+    entries.push(...result.entries);
+    if (!result.pageInfo.hasMore || !result.pageInfo.nextCursor) break;
+    cursor = result.pageInfo.nextCursor;
+  }
   const rows = entries
     .filter((w) => !w.background && !w.internal && !w.archivingAt)
     .map((w) => ({

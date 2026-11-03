@@ -127,8 +127,7 @@ export function HealthPopover({ theme, host, close, openScreen }: PluginPopoverP
 
   async function pick(id: string) {
     if (settings.status !== "ready") return;
-    await settings.save({ ...settings.values, targetWorkspaceId: id }, settings.revision);
-    setPicking(false);
+    if (await settings.save({ ...settings.values, targetWorkspaceId: id }, settings.revision)) setPicking(false);
   }
 
   const canClean = Boolean(target) && !mutation.isPending;
@@ -168,6 +167,7 @@ export function HealthPopover({ theme, host, close, openScreen }: PluginPopoverP
           </Text>
           <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{picking ? "▲" : "▼"}</Text>
         </Pressable>
+        {settings.status === "ready" && settings.saveError ? <Text style={{ color: HUE.red, fontSize: 12 }}>{settings.saveError}</Text> : null}
         {picking && sessions.data ? <SessionPicker theme={theme} sessions={sessions.data.sessions} selectedId={targetId} onPick={(id) => void pick(id)} /> : null}
       </View>
 

@@ -1,4 +1,4 @@
-AI accounts manages multiple Claude subscriptions and shows native OpenAI login readiness. OpenAI uses one account per teammate on the daemon host, managed entirely by stock OpenCode.
+AI accounts manages multiple Claude subscriptions and shows the native OpenAI account beside them, with the same usage bars. OpenAI uses one account per teammate on the daemon host, managed entirely by stock OpenCode.
 
 Claude conversations get a composer pill with their assigned account and usage. Switch an individual conversation or review a Claude-only Balance plan. New Claude conversations follow the usage recommendation unless you set a default. Claude Code keychain namespaces and OpenCode's Anthropic wrapper keep their existing behavior.
 
@@ -6,7 +6,7 @@ Claude conversations get a composer pill with their assigned account and usage. 
 
 Requires Paseo 0.12 or later, OpenCode, and sqlite3. Claude Code account switching requires macOS. Add Claude accounts from the screen. The plugin imports an existing native Claude login and installs its Claude wrapper automatically.
 
-For OpenAI, first drain and retire affected old OpenCode processes, including idle servers, with user permission. They retain their broker code and may still refresh tokens. Then run `opencode auth login` on the daemon host and choose OpenAI / ChatGPT. No patched binary or middleware hook is required. Stock OpenCode owns login, credentials, refresh, models, prompts, tools and transport after handoff. This plugin runtime does not poll OpenAI usage or provide OpenAI multiaccount controls. Native auth readiness is a local structural check, not remote credential validation or proof of process retirement.
+For OpenAI, first drain and retire affected old OpenCode processes, including idle servers, with user permission. They retain their broker code and may still refresh tokens. Then run `opencode auth login` on the daemon host and choose OpenAI / ChatGPT. No patched binary or middleware hook is required. Stock OpenCode owns login, credentials, refresh, models, prompts, tools and transport after handoff. The plugin reads OpenAI usage with the token native OpenCode currently holds, through a read-only request at most once a minute; it never refreshes, copies or stores that token, and a rejected or expired token is only reported. The native account is always the OpenAI default. Tapping it moves an OpenCode conversation to the chosen OpenAI model, and Force moves every OpenCode conversation running on Claude there; Claude Code conversations, pins and new conversations are unchanged. There are no OpenAI multiaccount controls. Native auth readiness is a local structural check, not remote credential validation or proof of process retirement.
 
 ## Migrating from the OpenAI broker
 

@@ -102,6 +102,7 @@ export function ForceConfirmCard({
   providerLabel,
   accent,
   target,
+  native,
   onCancel,
   onStarted,
 }: {
@@ -111,6 +112,7 @@ export function ForceConfirmCard({
   providerLabel: string;
   accent: string;
   target: { accountId: string; email: string };
+  native?: { modelLabel?: string };
   onCancel(): void;
   onStarted(): void;
 }) {
@@ -138,11 +140,15 @@ export function ForceConfirmCard({
   return (
     <Group theme={theme} dense={dense}>
       <View key="question" style={[ui.row, { flexDirection: "column", alignItems: "stretch", gap: 4 }]}>
-        <Text style={[ui.primary, { fontWeight: "600" }]}>{`Use ${target.email} for every ${providerLabel} conversation?`}</Text>
+        <Text style={[ui.primary, { fontWeight: "600" }]}>
+          {native ? `Move every OpenCode conversation on Claude to ${native.modelLabel ?? providerLabel}?` : `Use ${target.email} for every ${providerLabel} conversation?`}
+        </Text>
         {plan.isLoading ? <ActivityIndicator color={accent} size="small" /> : null}
         {data ? (
           <Text style={ui.secondary}>
-            {`${running} running will be paused, switched and resumed. ${data.agents.length - running} idle will be switched. ${data.assignments} stored pins move. New conversations follow this account until you release it.`}
+            {native
+              ? `${running} running will be paused, switched and resumed. ${data.agents.length - running} idle will be switched. They run on ${target.email}, the native sign-in. Claude Code conversations and new conversations are unchanged.`
+              : `${running} running will be paused, switched and resumed. ${data.agents.length - running} idle will be switched. ${data.assignments} stored pins move. New conversations follow this account until you release it.`}
           </Text>
         ) : null}
         {data?.blocker ? <Text style={ui.danger}>{data.blocker}</Text> : null}

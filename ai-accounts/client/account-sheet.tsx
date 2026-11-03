@@ -61,6 +61,7 @@ export function AccountSheet({
   account,
   isDefault,
   isRecommended,
+  native,
   busy,
   onClose,
   onRemove,
@@ -71,6 +72,8 @@ export function AccountSheet({
   account: SheetAccount;
   isDefault: boolean;
   isRecommended: boolean;
+  /** The native OpenCode OpenAI sign-in: one account, so default is fixed and force moves conversations onto OpenAI. */
+  native?: { modelLabel?: string };
   busy: boolean;
   onClose(): void;
   onRemove(): void;
@@ -108,6 +111,7 @@ export function AccountSheet({
           providerLabel={brand.name}
           accent={brand.accent}
           target={{ accountId: account.id, email: account.email }}
+          native={native}
           onCancel={() => setForcing(false)}
           onStarted={onClose}
         />
@@ -124,7 +128,7 @@ export function AccountSheet({
             {account.email}
           </Text>
           <Text numberOfLines={1} style={ui.secondary}>
-            {[brand.name, isDefault ? "Default for new conversations" : null, isRecommended ? "Recommended" : null].filter(Boolean).join(" · ")}
+            {[brand.name, native ? "Native OpenCode sign-in" : isDefault ? "Default for new conversations" : null, isRecommended ? "Recommended" : null].filter(Boolean).join(" · ")}
           </Text>
         </View>
       </View>
@@ -156,8 +160,9 @@ export function AccountSheet({
         <Text style={ui.secondary}>Usage unavailable</Text>
       )}
 
-      {separator}
+      {native ? null : separator}
 
+      {native ? null : (
       <View>
         <Pressable
           accessibilityRole="button"
@@ -184,11 +189,21 @@ export function AccountSheet({
             ))
           : null}
       </View>
+      )}
 
       {separator}
 
       <View style={{ gap: 2 }}>
-        {isDefault ? (
+        {native ? (
+          <OptionRow
+            theme={theme}
+            title="Default"
+            detail="The only OpenAI account: every OpenAI conversation uses this native sign-in."
+            selected
+            disabled
+            onPress={() => {}}
+          />
+        ) : isDefault ? (
           <OptionRow
             theme={theme}
             title="Default"
@@ -206,13 +221,24 @@ export function AccountSheet({
             onPress={() => preferrer.mutate({ provider, accountId: account.id })}
           />
         )}
-        <OptionRow theme={theme} title="Force" detail="Make default, then pause, switch and resume every conversation." disabled={busy} onPress={() => setForcing(true)} />
+        <OptionRow
+          theme={theme}
+          title="Force"
+          detail={
+            native
+              ? `Pause, switch to ${native.modelLabel ?? "the default OpenAI model"} and resume every OpenCode conversation on Claude.`
+              : "Make default, then pause, switch and resume every conversation."
+          }
+          disabled={busy}
+          onPress={() => setForcing(true)}
+        />
       </View>
 
       {preferrer.error ? <Text style={ui.danger}>{preferrer.error instanceof Error ? preferrer.error.message : String(preferrer.error)}</Text> : null}
 
-      {separator}
+      {native ? null : separator}
 
+      {native ? null : (
       <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
         <Button
           theme={theme}
@@ -225,6 +251,7 @@ export function AccountSheet({
           }}
         />
       </View>
+      )}
     </View>
   );
 }

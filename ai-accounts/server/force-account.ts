@@ -13,8 +13,8 @@ import {
   type Store,
   type StoredAccount,
 } from "./account-store";
-import { createDaemonClient, reloadAgent } from "./accounts";
-import { requireManagedProvider } from "./native-openai";
+import { createDaemonClient, providerModel, reloadAgent } from "./accounts";
+import { NATIVE_OPENAI_ACCOUNT_ID, nativeOpenAIAccount, nativeOpenAIStatus, requireManagedProvider } from "./native-openai";
 
 export type Job = z.infer<typeof forceJobSchema>;
 
@@ -35,7 +35,7 @@ export interface Candidate {
 }
 
 export function providerName(provider: AccountProvider): string {
-  return provider === "anthropic" ? "Claude" : "Codex";
+  return provider === "anthropic" ? "Claude" : "OpenAI";
 }
 
 export function message(error: unknown): string {
@@ -101,7 +101,68 @@ async function listCandidates(provider: AccountProvider, target: StoredAccount, 
   return candidates;
 }
 
+/**
+ * The native OpenAI login is already every OpenAI conversation's account, so forcing it can only mean
+ * moving the OpenCode conversations that run on Claude over to OpenAI. No pin, default or credential changes.
+ */
+async function nativeForceTarget(accountId: string): Promise<{ target: MoveTarget; blocker: string | null }> {
+  if (accountId !== NATIVE_OPENAI_ACCOUNT_ID) requireManagedProvider("openai");
+  const native = (await nativeOpenAIStatus()).status === "native-auth-present" ? await nativeOpenAIAccount(false) : null;
+  return {
+    target: { provider: "openai", email: native?.email ?? "OpenAI" },
+    blocker: native ? null : "Sign in to OpenAI first: run opencode auth login and choose OpenAI / ChatGPT.",
+  };
+}
+
+async function listNativeCandidates(): Promise<Candidate[]> {
+  const store = await readStore();
+  return withDaemon(async (daemon) => {
+    const candidates: Candidate[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await daemon.fetchAgents({ filter: { statuses: [...LIVE_STATUSES], includeArchived: false }, page: { limit: 200, cursor } });
+      for (const { agent } of page.entries) {
+        if (!agent.provider.startsWith("opencode")) continue;
+        if (harnessFor({ provider: agent.provider, model: agent.model ?? null }).current !== "anthropic") continue;
+        const sessionId = agent.runtimeInfo?.sessionId ?? undefined;
+        const owners = [sessionId, agent.id].filter((owner): owner is string => Boolean(owner));
+        candidates.push({
+          agentId: agent.id,
+          provider: agent.provider,
+          title: agent.title?.trim() || agent.id.slice(0, 8),
+          running: agent.status === "running" || agent.status === "initializing",
+          fromEmail: resolveAccount(store, "anthropic", owners)?.email ?? null,
+          owners,
+        });
+      }
+      cursor = page.pageInfo.hasMore ? (page.pageInfo.nextCursor ?? undefined) : undefined;
+    } while (cursor);
+    return candidates;
+  });
+}
+
+async function runNativeForce(job: Job, target: MoveTarget): Promise<void> {
+  const store = await readStore();
+  const model = await providerModel("openai", store.preferredModelIds?.openai);
+  if (!model) throw new Error("No OpenAI model is available in OpenCode; nothing was changed.");
+  const candidates = await listNativeCandidates();
+  job.total = candidates.length;
+  job.phase = "applying";
+  await runPool(candidates, CONCURRENCY, (candidate) => moveAgent(job, target, candidate, model));
+}
+
 export async function planForce({ provider, accountId }: RpcInput<typeof forcePlanRpc>) {
+  if (provider === "openai") {
+    const { target, blocker } = await nativeForceTarget(accountId);
+    const agents = await listNativeCandidates();
+    return {
+      email: target.email,
+      agents: agents.map(({ agentId, title, running, fromEmail }) => ({ agentId, title, running, fromEmail })),
+      assignments: 0,
+      busy: jobRunning,
+      blocker,
+    };
+  }
   const store = await readStore();
   const target = findTarget(store, provider, accountId);
   const agents = await listCandidates(provider, target, store);
@@ -133,7 +194,10 @@ export async function withDaemon<T>(work: (daemon: ReturnType<typeof createDaemo
   }
 }
 
-export async function moveAgent(job: Job, target: StoredAccount, candidate: Candidate, newModel: string | null = null): Promise<void> {
+/** All a move needs to know about where a conversation is going. */
+export type MoveTarget = Pick<StoredAccount, "provider" | "email">;
+
+export async function moveAgent(job: Job, target: MoveTarget, candidate: Candidate, newModel: string | null = null): Promise<void> {
   const provider = target.provider;
   try {
     const result = await withDaemon(async (daemon) => {
@@ -236,6 +300,27 @@ export function launchJob(job: Job, work: () => Promise<void>): void {
 
 export async function startForce({ provider, accountId }: RpcInput<typeof forceStartRpc>) {
   if (jobRunning) throw new Error("A force switch is already running");
+  if (provider === "openai") {
+    const { target, blocker } = await nativeForceTarget(accountId);
+    if (blocker) throw new Error(blocker);
+    const job: Job = {
+      id: randomUUID(),
+      kind: "force",
+      provider,
+      accountId: NATIVE_OPENAI_ACCOUNT_ID,
+      email: target.email,
+      phase: "preparing",
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      error: null,
+      total: 0,
+      completed: 0,
+      assignments: 0,
+      results: [],
+    };
+    launchJob(job, () => runNativeForce(job, target));
+    return { jobId: job.id };
+  }
   const store = await readStore();
   const target = findTarget(store, provider, accountId);
   const blocker = targetBlocker(target);

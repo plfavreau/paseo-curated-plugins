@@ -14,6 +14,7 @@ import {
   type StoredAccount,
 } from "./account-store";
 import { createDaemonClient, reloadAgent } from "./accounts";
+import { requireManagedProvider } from "./native-openai";
 
 export type Job = z.infer<typeof forceJobSchema>;
 
@@ -42,6 +43,7 @@ export function message(error: unknown): string {
 }
 
 export function findTarget(store: Store, provider: AccountProvider, accountId: string): StoredAccount {
+  requireManagedProvider(provider);
   const target = store.accounts.find((account) => account.id === accountId && account.provider === provider);
   if (!target) throw new Error(`${providerName(provider)} account not found`);
   return target;
@@ -49,6 +51,7 @@ export function findTarget(store: Store, provider: AccountProvider, accountId: s
 
 /** `needsReauth` can linger after a healthy refresh, so only an expired token makes the account unusable. */
 export function targetBlocker(target: StoredAccount): string | null {
+  if (target.provider === "openai") return "OpenAI is managed by native OpenCode, not ai-accounts.";
   if (target.needsReauth && target.expires <= Date.now() + 60_000) {
     return `${target.email} needs to sign in again before it can take over.`;
   }

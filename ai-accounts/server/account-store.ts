@@ -4,14 +4,12 @@ import { dirname, join } from "node:path";
 import { hasNamespace, readClaudeCredentials, writeClaudeCredentials } from "./claude-keychain";
 import { DATA_DIR, OPENCODE_AUTH_PATH, claudeCodeUserAgent } from "./environment";
 import { nextRecovery, recommendAccount, toRecommendationAccount } from "./recommendation";
+import { requireManagedProvider } from "./native-openai";
 
 const STORE_PATH = join(DATA_DIR, "accounts.json");
 const LOCK_PATH = join(DATA_DIR, "accounts.lock");
 const ANTHROPIC_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const ANTHROPIC_TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
-const OPENAI_TOKEN_URL = "https://auth.openai.com/oauth/token";
-const OPENAI_BOOTSTRAP_ID = "ai-accounts-broker-bootstrap";
 function anthropicHeaders() {
   return { "anthropic-beta": "oauth-2025-04-20", Accept: "application/json", "User-Agent": claudeCodeUserAgent() };
 }
@@ -140,33 +138,6 @@ export async function readStore(): Promise<Store> {
   return readStoreFile();
 }
 
-function decodeJwt(token: string): Record<string, unknown> {
-  try {
-    return JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
-}
-
-// OpenAI access tokens are JWTs carrying their own `exp` claim; Anthropic's are opaque
-// (`decodeJwt` returns {} for those, so this is a no-op there). Used to make sure the
-// locally recorded `expires` is never more optimistic than what the token itself declares.
-function jwtExpiryMs(token: string): number | undefined {
-  const exp = decodeJwt(token).exp;
-  return typeof exp === "number" ? exp * 1000 : undefined;
-}
-
-function openAiIdentity(access: string): { email?: string; externalAccountId?: string; plan?: string } {
-  const payload = decodeJwt(access);
-  const profile = payload["https://api.openai.com/profile"] as Record<string, unknown> | undefined;
-  const auth = payload["https://api.openai.com/auth"] as Record<string, unknown> | undefined;
-  return {
-    email: typeof profile?.email === "string" ? profile.email : undefined,
-    externalAccountId: typeof auth?.chatgpt_account_id === "string" ? auth.chatgpt_account_id : undefined,
-    plan: typeof auth?.chatgpt_plan_type === "string" ? auth.chatgpt_plan_type : undefined,
-  };
-}
-
 async function anthropicEmail(access: string): Promise<string> {
   const response = await fetch("https://api.anthropic.com/api/oauth/profile", {
     headers: { ...anthropicHeaders(), Authorization: `Bearer ${access}` },
@@ -191,16 +162,8 @@ async function readOpenCodeAuth(): Promise<Record<string, unknown> | undefined> 
 
 async function openCodeLogin(provider: AccountProvider): Promise<(OpenCodeLogin & { access: string; refresh: string }) | undefined> {
   const credential = (await readOpenCodeAuth())?.[provider] as OpenCodeLogin | undefined;
-  if (provider === "openai" && credential?.accountId === OPENAI_BOOTSTRAP_ID) return undefined;
   if (credential?.type !== "oauth" || !credential.access || !credential.refresh) return undefined;
   return credential as OpenCodeLogin & { access: string; refresh: string };
-}
-
-export async function assertNativeOpenAIOAuth(login?: { type?: string }): Promise<void> {
-  const native = login ?? ((await readOpenCodeAuth())?.openai as OpenCodeLogin | undefined);
-  if (native?.type !== "oauth") {
-    throw new Error("AI accounts blocked OpenAI inference: migrate OpenCode's native OpenAI login to a native ChatGPT OAuth login (not an API key), then restart ONLY affected idle OpenCode processes. Existing native credentials were not changed. Do not restart the Paseo daemon.");
-  }
 }
 
 async function writeOpenCodeAuth(auth: Record<string, unknown>): Promise<void> {
@@ -220,54 +183,11 @@ async function writeOpenCodeLogin(provider: AccountProvider, tokens: { access: s
   await writeOpenCodeAuth(auth);
 }
 
-async function bootstrapNativeOpenAI(): Promise<void> {
-  await mkdir(dirname(OPENCODE_AUTH_PATH), { recursive: true, mode: 0o700 });
-  const auth = (await readOpenCodeAuth()) ?? {};
-  if (auth.openai) return;
-  // Only the OAuth discriminator is needed for native activation; never duplicate live tokens.
-  auth.openai = { type: "oauth", access: "", refresh: "", expires: 0, accountId: OPENAI_BOOTSTRAP_ID };
-  await writeOpenCodeAuth(auth);
-}
-
-/** Called under the account-store lock after removing the last OpenAI broker account. */
-export async function removeNativeOpenAIBootstrap(): Promise<void> {
-  const auth = await readOpenCodeAuth();
-  const native = auth?.openai as OpenCodeLogin | undefined;
-  if (!auth || native?.type !== "oauth" || native.accountId !== OPENAI_BOOTSTRAP_ID || native.access !== "" || native.refresh !== "" || native.expires !== 0) return;
-  delete auth.openai;
-  await writeOpenCodeAuth(auth);
-}
-
 /** Imports OpenCode's existing logins so nobody signs in twice. Returns the providers it imported. */
 export async function migrateOpenCodeAccounts(): Promise<AccountProvider[]> {
   const store = await readStore();
   const imported: AccountProvider[] = [];
-  for (const provider of ["anthropic", "openai"] as const) {
-    if (provider === "openai") {
-      try {
-        const added = await withStore(async (current) => {
-          if (current.dismissedNativeProviders?.includes(provider)) return false;
-          if (current.accounts.some((account) => account.provider === provider)) {
-            await bootstrapNativeOpenAI();
-            return false;
-          }
-          const credential = await openCodeLogin(provider);
-          if (!credential) return false;
-          const identity = openAiIdentity(credential.access);
-          if (!identity.email) throw new Error("The account login did not include an email address");
-          await saveAccountInStore(current, provider, {
-            ...identity, email: identity.email,
-            access: credential.access, refresh: credential.refresh, expires: credential.expires ?? 0,
-            externalAccountId: credential.accountId ?? identity.externalAccountId,
-          });
-          return true;
-        });
-        if (added) imported.push(provider);
-      } catch (error) {
-        console.error(`Could not import the current ${provider} account:`, error);
-      }
-      continue;
-    }
+  for (const provider of ["anthropic"] as const) {
     if (store.accounts.some((account) => account.provider === provider)) {
       continue;
     }
@@ -292,11 +212,11 @@ export async function saveAccount(
   provider: AccountProvider,
   credentials: { access: string; refresh: string; expires: number; email?: string; externalAccountId?: string; plan?: string },
 ): Promise<StoredAccount> {
-  const identity = provider === "openai" ? openAiIdentity(credentials.access) : {};
-  const email = credentials.email ?? identity.email ?? (provider === "anthropic" ? await anthropicEmail(credentials.access) : undefined);
+  requireManagedProvider(provider);
+  const email = credentials.email ?? await anthropicEmail(credentials.access);
   if (!email) throw new Error("The account login did not include an email address");
-  const externalAccountId = credentials.externalAccountId ?? identity.externalAccountId;
-  const plan = credentials.plan ?? identity.plan;
+  const externalAccountId = credentials.externalAccountId;
+  const plan = credentials.plan;
   return withStore(async (store) => {
     const account = await saveAccountInStore(store, provider, { ...credentials, email, externalAccountId, plan });
     if (store.dismissedNativeProviders) {
@@ -328,7 +248,6 @@ async function saveAccountInStore(store: Store, provider: AccountProvider, crede
   if (!existing) store.accounts.push(account);
   store.defaultAccountIds[provider] ??= account.id;
   if (provider === "anthropic" && (await hasNamespace(account.id))) await writeClaudeCredentials(account);
-  if (provider === "openai") await bootstrapNativeOpenAI();
   return account;
 }
 
@@ -355,6 +274,7 @@ function assignedAccount(store: Store, provider: AccountProvider, keys: OwnerKey
 }
 
 export function resolveAccount(store: Store, provider: AccountProvider, keys?: OwnerKeys): StoredAccount | undefined {
+  if (provider === "openai") return undefined;
   const explicit = assignedAccount(store, provider, keys);
   if (explicit) return explicit;
   const candidates = store.accounts.filter((account) => account.provider === provider);
@@ -372,6 +292,7 @@ export function resolveAccount(store: Store, provider: AccountProvider, keys?: O
 }
 
 export async function setPreferredAccount(provider: AccountProvider, accountId: string | null): Promise<void> {
+  requireManagedProvider(provider);
   await withStore((store) => {
     const preferred = (store.preferredAccountIds ??= {});
     if (accountId) preferred[provider] = accountId;
@@ -380,6 +301,7 @@ export async function setPreferredAccount(provider: AccountProvider, accountId: 
 }
 
 export async function setPreferredModel(provider: AccountProvider, modelId: string): Promise<void> {
+  requireManagedProvider(provider);
   await withStore((store) => {
     (store.preferredModelIds ??= {})[provider] = modelId;
   });
@@ -400,7 +322,7 @@ export function usageIsStale(account: StoredAccount, now = Date.now()): boolean 
 }
 
 export async function refreshStaleUsage(accounts: StoredAccount[]): Promise<void> {
-  const staleIds = accounts.filter((account) => usageIsStale(account)).map((account) => account.id);
+  const staleIds = accounts.filter((account) => account.provider === "anthropic" && usageIsStale(account)).map((account) => account.id);
   if (staleIds.length === 0) return;
   usageRefresh ??= Promise.all(staleIds.map(refreshUsage))
     .then(() => undefined)
@@ -411,6 +333,7 @@ export async function refreshStaleUsage(accounts: StoredAccount[]): Promise<void
 }
 
 export async function selectedAccount(provider: AccountProvider, keys?: OwnerKeys): Promise<StoredAccount | undefined> {
+  requireManagedProvider(provider);
   let store = await readStore();
   const candidates = store.accounts.filter((account) => account.provider === provider);
   if (candidates.length <= 1) return candidates[0];
@@ -442,17 +365,12 @@ export async function adoptClaudeRotation(account: StoredAccount): Promise<boole
 type TokenResponse = { access_token: string; refresh_token?: string; expires_in: number };
 
 function requestRefresh(provider: AccountProvider, refresh: string): Promise<Response> {
-  return provider === "anthropic"
-    ? fetch(ANTHROPIC_TOKEN_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ grant_type: "refresh_token", refresh_token: refresh, client_id: ANTHROPIC_CLIENT_ID }),
-      })
-    : fetch(OPENAI_TOKEN_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refresh, client_id: OPENAI_CLIENT_ID }),
-      });
+  requireManagedProvider(provider);
+  return fetch(ANTHROPIC_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ grant_type: "refresh_token", refresh_token: refresh, client_id: ANTHROPIC_CLIENT_ID }),
+  });
 }
 
 /** A rate limit (429) or request timeout (408) says nothing about the token; other 4xx mean it is dead. */
@@ -461,7 +379,7 @@ function tokenRejected(status: number): boolean {
 }
 
 async function loginEmail(provider: AccountProvider, access: string): Promise<string | undefined> {
-  if (provider === "openai") return openAiIdentity(access).email;
+  requireManagedProvider(provider);
   return anthropicEmail(access).catch(() => undefined);
 }
 
@@ -474,20 +392,13 @@ async function adoptOpenCodeRotation(account: StoredAccount): Promise<boolean> {
   try {
     const copy = await openCodeLogin(account.provider);
     if (!copy || copy.refresh === account.refresh) return false;
-    if (account.provider === "openai") {
-      const identity = openAiIdentity(copy.access);
-      if (account.externalAccountId && identity.externalAccountId !== account.externalAccountId) return false;
-      if (identity.email?.toLowerCase() !== account.email.toLowerCase()) return false;
-    }
     const response = await requestRefresh(account.provider, copy.refresh);
     if (!response.ok) return false;
     const candidate = structuredClone(account);
     candidate.refresh = copy.refresh;
     applyTokens(candidate, (await response.json()) as TokenResponse);
     const email = await loginEmail(account.provider, candidate.access);
-    if (account.provider === "openai" && account.externalAccountId && openAiIdentity(candidate.access).externalAccountId !== account.externalAccountId) return false;
     if (email?.toLowerCase() !== account.email.toLowerCase()) {
-      if (account.provider === "openai") return false;
       // It was another login, and renewing just rotated it, so hand OpenCode the new token.
       await writeOpenCodeLogin(account.provider, candidate);
       return false;
@@ -501,6 +412,7 @@ async function adoptOpenCodeRotation(account: StoredAccount): Promise<boolean> {
 }
 
 async function refreshCredentials(account: StoredAccount): Promise<void> {
+  requireManagedProvider(account.provider);
   const label = account.provider === "anthropic" ? "Claude" : "Codex";
   if (await adoptClaudeRotation(account)) return;
   const response = await requestRefresh(account.provider, account.refresh);
@@ -519,15 +431,6 @@ function applyTokens(account: StoredAccount, body: TokenResponse): void {
   account.access = body.access_token;
   account.refresh = body.refresh_token ?? account.refresh;
   account.expires = Date.now() + body.expires_in * 1000;
-  if (account.provider === "openai") {
-    for (const [key, value] of Object.entries(openAiIdentity(account.access))) {
-      if (value !== undefined) Object.assign(account, { [key]: value });
-    }
-    // Never trust `expires_in` math to be more generous than what the access token itself
-    // encodes: if the two disagree, the JWT's own claim is the more authoritative one.
-    const jwtExpires = jwtExpiryMs(account.access);
-    if (jwtExpires) account.expires = Math.min(account.expires, jwtExpires);
-  }
   account.updatedAt = new Date().toISOString();
   delete account.needsReauth;
 }
@@ -539,6 +442,7 @@ function applyTokens(account: StoredAccount, body: TokenResponse): void {
  * plan change, clock skew) and `ensureFreshAccount` would otherwise never refresh in that case.
  */
 export async function forceRefreshAccount(provider: AccountProvider, keys?: OwnerKeys): Promise<StoredAccount | undefined> {
+  requireManagedProvider(provider);
   return withStore(async (store) => {
     const account = resolveAccount(store, provider, keys);
     if (!account) return account;
@@ -552,6 +456,7 @@ export async function forceRefreshAccount(provider: AccountProvider, keys?: Owne
 }
 
 export async function ensureFreshAccount(provider: AccountProvider, keys?: OwnerKeys): Promise<StoredAccount | undefined> {
+  requireManagedProvider(provider);
   const current = await selectedAccount(provider, keys);
   if (!current || current.expires > Date.now() + 60_000) return current;
   return withStore(async (store) => {
@@ -562,57 +467,9 @@ export async function ensureFreshAccount(provider: AccountProvider, keys?: Owner
   });
 }
 
-export async function selectedOpenAIAccount(keys?: OwnerKeys): Promise<StoredAccount | undefined> {
-  const explicit = (store: Store) => {
-    for (const owner of ownerChain(keys)) {
-      const id = store.assignments[assignmentKey("openai", owner)] ?? store.assignments[owner];
-      if (!id) continue;
-      const account = store.accounts.find((candidate) => candidate.id === id && candidate.provider === "openai");
-      if (!account) throw new Error("Assigned OpenAI account is unavailable");
-      return account;
-    }
-  };
-  const store = await readStore();
-  const assigned = explicit(store);
-  if (assigned) return assigned;
-  const candidates = store.accounts.filter((account) => account.provider === "openai");
-  if (candidates.length > 1) await refreshStaleUsage(candidates);
-  return withStore((current) => {
-    const assigned = explicit(current);
-    if (assigned) return assigned;
-    const resolved = resolveAccount(current, "openai", keys);
-    const owner = ownerChain(keys)[0];
-    if (resolved && owner) current.assignments[assignmentKey("openai", owner)] = resolved.id;
-    return resolved;
-  });
-}
-
-export async function ensureFreshAccountById(provider: AccountProvider, accountId: string): Promise<StoredAccount> {
-  return freshAccountById(provider, accountId);
-}
-
-export async function forceRefreshAccountById(provider: AccountProvider, accountId: string, rejectedAccess: string): Promise<StoredAccount> {
-  return freshAccountById(provider, accountId, rejectedAccess);
-}
-
-async function freshAccountById(provider: AccountProvider, accountId: string, rejectedAccess?: string): Promise<StoredAccount> {
-  const account = await withStore(async (store) => {
-    const found = store.accounts.find((candidate) => candidate.id === accountId && candidate.provider === provider);
-    if (!found) throw new Error("Selected AI account is unavailable");
-    if (found.needsReauth) return found;
-    const fresh = !!found.access && Number.isFinite(found.expires) && found.expires > Date.now() + 60_000;
-    if (!fresh || (rejectedAccess !== undefined && found.access === rejectedAccess)) {
-      await refreshCredentials(found);
-    }
-    return found;
-  });
-  if (account.needsReauth || !account.access || !Number.isFinite(account.expires) || account.expires <= Date.now() + 1_000) {
-    throw new Error("Selected AI account requires sign-in");
-  }
-  return account;
-}
-
 export async function refreshUsage(accountId: string): Promise<void> {
+  // Legacy OpenAI records are archival only, including direct callers of this helper.
+  if ((await readStore()).accounts.find((account) => account.id === accountId)?.provider === "openai") return;
   const account = await withStore(async (store) => {
     const found = store.accounts.find((candidate) => candidate.id === accountId);
     if (!found) throw new Error("AI account not found");
@@ -621,17 +478,10 @@ export async function refreshUsage(accountId: string): Promise<void> {
   });
   try {
     const response = await fetch(
-      account.provider === "anthropic" ? "https://api.anthropic.com/api/oauth/usage" : "https://chatgpt.com/backend-api/wham/usage",
+      "https://api.anthropic.com/api/oauth/usage",
       {
         headers:
-          account.provider === "anthropic"
-            ? { ...anthropicHeaders(), Authorization: `Bearer ${account.access}` }
-            : {
-                Accept: "application/json",
-                Authorization: `Bearer ${account.access}`,
-                ...(account.externalAccountId ? { "ChatGPT-Account-Id": account.externalAccountId } : {}),
-                originator: "codex_cli_rs",
-              },
+          { ...anthropicHeaders(), Authorization: `Bearer ${account.access}` },
         signal: AbortSignal.timeout(8_000),
       },
     );

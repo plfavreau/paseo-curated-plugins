@@ -1,43 +1,50 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-assert.ok(process.env.OPENCODE_SOURCE, "Set OPENCODE_SOURCE to the pinned upstream checkout (see OVERVIEW.md)");
-const scratch = await mkdtemp(join(tmpdir(), "ai-accounts-adapter-"));
+assert.ok(process.env.OPENCODE_SOURCE, "Set OPENCODE_SOURCE to stock OpenCode v1.18.26 with Bun dependencies installed");
+const source = resolve(process.env.OPENCODE_SOURCE);
+assert.equal(execFileSync("git", ["rev-parse", "HEAD"], { cwd: source, encoding: "utf8" }).trim(), "774cc7c1914e4329eefde5a669f938b0cf566661");
+execFileSync("git", ["diff", "--exit-code", "HEAD", "--", "packages/opencode/src", "packages/plugin/src"], { cwd: source });
+const scratch = await mkdtemp(join(tmpdir(), "ai-accounts-stock-"));
 process.env.XDG_DATA_HOME = scratch;
-delete process.env.PASEO_AGENT_ID;
-const natives = [];
+process.env.XDG_CONFIG_HOME = join(scratch, "config");
+const instances = [];
+const originalFetch = globalThis.fetch;
+globalThis.fetch = (input, init) => {
+  const url = new URL(input instanceof Request ? input.url : String(input));
+  assert.equal(url.hostname, "127.0.0.1", "Native fixture must never contact a real provider");
+  return originalFetch(input, init);
+};
 let backend;
 try {
-  const store = await import("../server/account-store.ts");
-  const { default: broker } = await import("../opencode-codex-plugin.ts");
-  const { CodexAuthPlugin } = await import(pathToFileURL(resolve(process.env.OPENCODE_SOURCE, "packages/opencode/src/plugin/openai/codex.ts")).href);
-  const accounts = await Promise.all(["first", "second"].map((name) => store.saveAccount("openai", {
-    email: `${name}@example.invalid`, access: `synthetic-${name}`, refresh: `synthetic-refresh-${name}`,
-    expires: Date.now() + 3_600_000, externalAccountId: name,
-  })));
-  await store.withStore((current) => {
-    current.assignments["openai:one"] = accounts[0].id;
-    current.assignments["openai:two"] = accounts[1].id;
-  });
-  const authPath = join(scratch, "opencode/auth.json");
-  const authBefore = await readFile(authPath, "utf8");
+  const { default: retired } = await import("../opencode-codex-plugin.ts");
+  // The old manual entry must be safe on a completely stock PluginInput, without capabilities.
+  assert.deepEqual(await retired({ directory: scratch, client: {} }), {});
+  const { CodexAuthPlugin } = await import(pathToFileURL(join(source, "packages/opencode/src/plugin/openai/codex.ts")).href);
   const records = [];
   let sockets = 0;
+  let refreshes = 0;
   let fallbackAttempts = 0;
   function record(transport, headers, body, socket) {
-    records.push({ transport, identity: headers.get("chatgpt-account-id"), authorization: headers.get("authorization"),
-      internal: headers.has("x-paseo-opencode-session") || headers.has("x-opencode-title"),
-      session: headers.get("session-id"), affinity: headers.get("x-session-affinity"), body, socket });
+    records.push({ transport, authorization: headers.get("authorization"), identity: headers.get("chatgpt-account-id"), session: headers.get("session-id"), body, socket });
   }
   backend = Bun.serve({
     hostname: "127.0.0.1", port: 0,
     async fetch(request, server) {
       const url = new URL(request.url);
+      if (url.pathname === "/oauth/token") {
+        refreshes += 1;
+        const body = new URLSearchParams(await request.text());
+        assert.equal(body.get("grant_type"), "refresh_token");
+        assert.equal(body.get("refresh_token"), "synthetic-native-refresh");
+        return Response.json({ access_token: "synthetic-native-refreshed", refresh_token: "synthetic-rotated", expires_in: 3600 });
+      }
       if (request.headers.get("upgrade") === "websocket") {
-        if (url.pathname.startsWith("/fallback/")) {
+        if (url.pathname === "/fallback/responses") {
           fallbackAttempts += 1;
           return new Response("Fixture rejects WebSocket upgrade", { status: 426 });
         }
@@ -50,126 +57,84 @@ try {
     websocket: {
       message(socket, message) {
         record("ws", socket.data.headers, String(message), socket.data.socket);
-        setTimeout(() => socket.send(JSON.stringify({ type: "response.completed", response: { id: "resp_fixture" } })), 25);
+        socket.send(JSON.stringify({ type: "response.completed", response: { id: "resp_fixture" } }));
       },
     },
   });
-  const input = { directory: scratch, capabilities: { authLoaderMiddleware: true }, client: {
-    session: { get: async () => ({ data: {} }) },
-    auth: { set: async () => { throw new Error("Native auth must not be written"); } },
-  } };
-  const hooks = await broker(input);
-  // OpenCode initializes all auth loaders together, even for an Anthropic request.
-  const originalFetch = globalThis.fetch;
-  let apiNetworkCalls = 0;
-  try {
-    const apiAuth = { type: "api", key: "synthetic-native-api-key" };
-    await writeFile(authPath, JSON.stringify({ openai: apiAuth }));
-    globalThis.fetch = async () => { apiNetworkCalls += 1; throw new Error("API-mode initialization must not contact any provider"); };
-    for (const experimentalWebSockets of [false, true]) {
-      const native = await CodexAuthPlugin(input, { experimentalWebSockets });
-      natives.push(native);
-      const methods = native.auth.methods;
-      const models = { "gpt-5.5": { id: "gpt-5.5", api: { id: "gpt-5.5" }, options: {} } };
-      assert.equal(await native.provider.models({ models }, { auth: apiAuth }), models);
-      const nativeOptions = await native.auth.loader(async () => apiAuth, {});
-      const anthropicOptions = { apiKey: "synthetic-anthropic-key" };
-      const anthropicLoader = async () => anthropicOptions;
-      const initialized = {};
-      // Same sequential, uncaught loader composition as shared provider initialization.
-      for (const [providerID, loader] of [["openai", native.auth.loader], ["anthropic", anthropicLoader]]) {
-        const output = { loader };
-        await hooks["auth.loader"]({ providerID }, output);
-        if (providerID === "anthropic") assert.equal(output.loader, anthropicLoader);
-        initialized[providerID] = await output.loader(async () => apiAuth, {});
-      }
-      const { fetch: nativeFetch, ...expectedOptions } = nativeOptions;
-      const { fetch: brokerFetch, ...actualOptions } = initialized.openai;
-      assert.deepEqual(actualOptions, expectedOptions);
-      assert.equal(typeof brokerFetch, "function");
-      assert.notEqual(brokerFetch, nativeFetch);
-      assert.equal(initialized.anthropic, anthropicOptions);
-      assert.equal(native.auth.methods, methods);
-      await assert.rejects(brokerFetch("https://example.invalid/v1/responses"), /native ChatGPT OAuth login/);
-      for (const hook of ["chat.params", "chat.headers"]) {
-        const output = { headers: { native: "preserved" } };
-        await hooks[hook]({ model: { providerID: "anthropic" } }, output);
-        assert.deepEqual(output, { headers: { native: "preserved" } });
-        await assert.rejects(hooks[hook]({ model: { providerID: "openai" } }, output), /native ChatGPT OAuth login/);
-      }
-    }
-    assert.equal(apiNetworkCalls, 0);
-  } finally {
-    globalThis.fetch = originalFetch;
-    await writeFile(authPath, authBefore);
-  }
+  let auth = { type: "oauth", access: "synthetic-native", refresh: "synthetic-native-refresh", expires: Date.now() + 3600000, accountId: "single-native-account" };
+  let nativeWrites = 0;
+  const input = { directory: scratch, client: { auth: { set: async ({ path, body }) => {
+    assert.equal(path.id, "openai");
+    nativeWrites += 1;
+    auth = body;
+  } } } };
   const body = JSON.stringify({ model: "gpt-5.5", stream: true, background: false, store: false,
-    instructions: "Native instructions unchanged.\nAGENTS fixture sentinel preserved.",
-    tools: [{ type: "function", name: "skill", description: "fixture skill", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"], additionalProperties: false }, strict: true }],
-    input: [{ role: "user", content: [{ type: "input_text", text: "native smoke check" }] }],
-    tool_choice: "auto", parallel_tool_calls: true, reasoning: { effort: "low" }, include: ["reasoning.encrypted_content"] });
-  async function compose(websockets, path = "/backend-api/codex/responses") {
-    const native = await CodexAuthPlugin(input, { codexApiEndpoint: new URL(path, backend.url).href, experimentalWebSockets: websockets });
-    natives.push(native);
-    const bootstrap = JSON.parse(await readFile(authPath, "utf8")).openai;
-    assert.equal(bootstrap.access, "");
-    assert.equal(bootstrap.refresh, "");
-    const models = await native.provider.models({ models: {
-      "gpt-5.5": { id: "gpt-5.5", api: { id: "gpt-5.5" }, options: {} },
-    } }, { auth: bootstrap });
-    assert.ok(models["gpt-5.5"], "Empty OAuth sentinel must activate native subscription models without a plan JWT");
-    const output = { loader: native.auth.loader };
-    await hooks["auth.loader"]({ providerID: "openai" }, output);
-    return output.loader(async () => JSON.parse(await readFile(authPath, "utf8")).openai, {});
+    instructions: "Native instructions unchanged.\nAGENTS and skill guidance preserved.",
+    tools: [{ type: "function", name: "fixture", description: "unchanged tool", parameters: { type: "object", properties: {}, additionalProperties: false }, strict: true }],
+    input: [{ role: "user", content: [{ type: "input_text", text: "native smoke" }] }],
+    reasoning: { effort: "low" } });
+  async function load(websockets, path = "/backend-api/codex/responses") {
+    const native = await CodexAuthPlugin(input, { issuer: backend.url.origin, codexApiEndpoint: new URL(path, backend.url).href, experimentalWebSockets: websockets });
+    instances.push(native);
+    assert.ok(native.auth.methods.some((method) => method.type === "oauth"), "Native login methods remain available");
+    const models = { "gpt-5.5": { id: "gpt-5.5", api: { id: "gpt-5.5" }, options: {} } };
+    assert.ok((await native.provider.models({ models }, { auth }))["gpt-5.5"]);
+    return native.auth.loader(async () => structuredClone(auth), {});
   }
-  async function send(loaded, owner, title = false) {
-    const headers = { "session-id": "shared-session", "x-session-affinity": "shared-affinity", authorization: "Bearer must-be-replaced", ...(title ? { "x-opencode-title": "true" } : {}) };
-    await hooks["chat.headers"]({ sessionID: owner, model: { providerID: "openai" } }, { headers });
-    const response = await loaded.fetch("https://api.openai.com/v1/responses", { method: "POST", headers, body });
+  async function send(loaded, title = false) {
+    const response = await loaded.fetch("https://api.openai.com/v1/responses", {
+      method: "POST", headers: { "session-id": "native-session", authorization: "Bearer placeholder", ...(title ? { "x-opencode-title": "true" } : {}) }, body,
+    });
     assert.equal(response.status, 200);
     return response.text();
   }
-  const http = await compose(false);
-  await Promise.all([send(http, "one"), send(http, "two")]);
-  assert.equal(records.length, 2);
-  assert.ok(records.every((entry) => entry.transport === "http" && entry.body === body));
-  const ws = await compose(true);
+  const http = await load(false);
+  await send(http);
+  assert.equal(records.at(-1).body, body);
+  assert.equal(records.at(-1).authorization, "Bearer synthetic-native");
+  assert.equal(nativeWrites, 0);
+  const ws = await load(true);
   const start = records.length;
-  await Promise.all([send(ws, "one"), send(ws, "two")]);
-  await Promise.all([send(ws, "one"), send(ws, "two")]);
-  const websocketRecords = records.slice(start);
-  assert.equal(websocketRecords.length, 4);
-  assert.ok(websocketRecords.every((entry) => entry.transport === "ws"));
-  assert.equal(new Set(websocketRecords.map((entry) => entry.socket)).size, 2);
+  await send(ws);
+  await send(ws);
+  const wsRecords = records.slice(start);
+  assert.equal(wsRecords.length, 2);
+  assert.ok(wsRecords.every((entry) => entry.transport === "ws"));
+  assert.equal(new Set(wsRecords.map((entry) => entry.socket)).size, 1, "Native session pool is reused for the one native account");
   const { stream, background, ...payload } = JSON.parse(body);
-  for (const entry of websocketRecords) assert.deepEqual(JSON.parse(entry.body), { type: "response.create", ...payload });
-  for (const identity of ["first", "second"]) assert.equal(new Set(websocketRecords.filter((entry) => entry.identity === identity).map((entry) => entry.socket)).size, 1);
-  await store.withStore((current) => { current.assignments["openai:one"] = accounts[1].id; });
-  await send(ws, "one");
-  assert.equal(records.at(-1).identity, "second");
-  assert.equal(records.at(-1).socket, websocketRecords.find((entry) => entry.identity === "second").socket);
-  await send(ws, "two", true);
+  for (const record of wsRecords) assert.deepEqual(JSON.parse(record.body), { type: "response.create", ...payload });
+  await send(ws, true);
   assert.equal(records.at(-1).transport, "http");
   assert.equal(records.at(-1).body, body);
-  const fallback = await compose(true, "/fallback/responses");
-  for (let attempt = 0; attempt < 5; attempt += 1) await assert.rejects(send(fallback, "two"));
-  await send(fallback, "two");
+  const fallback = await load(true, "/fallback/responses");
+  for (let attempt = 0; attempt < 5; attempt += 1) await assert.rejects(send(fallback));
+  await send(fallback);
   assert.equal(fallbackAttempts, 6);
   assert.equal(records.at(-1).transport, "http");
   assert.equal(records.at(-1).body, body);
-  await send(fallback, "two");
-  assert.equal(fallbackAttempts, 6);
-  for (const entry of records) {
-    assert.ok(entry.identity === "first" || entry.identity === "second");
-    assert.equal(entry.authorization, `Bearer synthetic-${entry.identity}`);
-    assert.equal(entry.internal, false);
-    assert.equal(entry.session, "shared-session");
-    assert.equal(entry.affinity, "shared-affinity");
+  for (const record of records) {
+    assert.equal(record.identity, "single-native-account");
+    assert.equal(record.session, "native-session");
   }
-  assert.equal(await readFile(authPath, "utf8"), authBefore);
-  console.log("Native adapter verification passed: API-mode shared loader initialization, Anthropic unaffected, OpenAI-only inference rejection, real HTTP/WebSockets, unchanged instructions/tools, credential isolation/reuse, account switch, title/failure HTTP fallback, native auth unchanged.");
+  // Only stock OpenCode owns refresh and writes back the rotated credential in this fixture.
+  auth.expires = 0;
+  await Promise.all([send(http), send(http)]);
+  assert.equal(refreshes, 1);
+  assert.equal(nativeWrites, 1);
+  assert.equal(auth.refresh, "synthetic-rotated");
+  assert.equal(records.at(-1).authorization, "Bearer synthetic-native-refreshed");
+
+  auth = { type: "api", key: "synthetic-api-key" };
+  const api = await CodexAuthPlugin(input, { experimentalWebSockets: false });
+  instances.push(api);
+  assert.deepEqual(await api.auth.loader(async () => auth, {}), {});
+  const models = { fixture: {} };
+  assert.equal(await api.provider.models({ models }, { auth }), models);
+  assert.equal(refreshes, 1);
+  console.log("Stock v1.18.26 native integration passed: no middleware or broker hooks, native login/models, unchanged instructions/tools over HTTP and WebSocket, single-account pool reuse, title/failure HTTP fallback, and native-only refresh/writeback. Synthetic loopback data only.");
 } finally {
-  for (const native of natives) await native.dispose?.();
+  for (const native of instances) await native.dispose?.();
   await backend?.stop(true);
+  globalThis.fetch = originalFetch;
   await rm(scratch, { recursive: true, force: true });
 }

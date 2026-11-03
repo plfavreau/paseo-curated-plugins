@@ -89,7 +89,7 @@ export default function contribute(client: PluginClientContext) {
     const items: { id: string; title: string; icon: string; onSelect: () => void }[] = [];
     const summaries: string[] = [];
 
-    for (const provider of ["anthropic", "openai"] as const) {
+    for (const provider of ["anthropic"] as const) {
       const state = await client.rpc(accountStateRpc, { provider, refreshUsage: false });
       const name = providerName(provider);
       const active = state.accounts.find((candidate) => candidate.id === state.activeAccountId);
@@ -182,8 +182,8 @@ export default function contribute(client: PluginClientContext) {
               : " · Better account available"
             : "";
         const presentation: PillPresentation = {
-          title: active ? `${name} account: ${active.email} (${utilization} peak usage)${status}` : `Add ${name} account`,
-          label: active ? `${utilization} · ${compactEmail(active.email)}` : `Add ${name} account`,
+          title: provider === "openai" ? (state.nativeOpenAI?.message ?? "OpenAI: native OpenCode account") : active ? `${name} account: ${active.email} (${utilization} peak usage)${status}` : `Add ${name} account`,
+          label: provider === "openai" ? (state.nativeOpenAI?.status === "native-auth-present" ? "OpenAI · native" : "OpenAI · login required") : active ? `${utilization} · ${compactEmail(active.email)}` : `Add ${name} account`,
           icon: indicator,
         };
         const pill = pills.get(agent.id);

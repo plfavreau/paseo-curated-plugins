@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { readStore, type AccountProvider } from "./account-store";
 import { OPENCODE_CONFIG_DIR, PLUGIN_ID, paseoCliPath } from "./environment";
 import { releaseOriginalAuthPlugins } from "./opencode-handover";
+import { nativeOpenAIStatus } from "./native-openai";
 
 const execFileAsync = promisify(execFile);
 const MARKER = "// Written by the ai-accounts Paseo plugin; removed when its last account is.";
@@ -28,7 +29,7 @@ async function installedDirectory(): Promise<string | undefined> {
 async function listedByHand(): Promise<boolean> {
   for (const name of ["opencode.json", "opencode.jsonc"]) {
     const text = await readFile(join(OPENCODE_CONFIG_DIR, name), "utf8").catch(() => "");
-    if (/ai-accounts\/(opencode-plugin|opencode-codex-plugin)\.ts|ai-accounts\/opencode\//.test(text)) return true;
+    if (/ai-accounts\/opencode-plugin\.ts|ai-accounts\/opencode\//.test(text)) return true;
   }
   return false;
 }
@@ -38,13 +39,21 @@ async function listedByHand(): Promise<boolean> {
  * account gets a one-line re-export there, and loses it when its last account goes. That provider's
  * original auth plugin then comes out of the user's config, so only one copy renews the login.
  */
-export async function syncOpenCodePlugins(): Promise<void> {
-  const root = await installedDirectory();
+export async function syncOpenCodePlugins(resolveDirectory = installedDirectory): Promise<void> {
+  const native = await nativeOpenAIStatus();
+  if (native.status !== "native-auth-present") console.error(`[${PLUGIN_ID}] OpenAI ${native.status}: ${native.message}`);
+  // Cleanup must not depend on finding an installed source directory or any signed-in account.
+  if (native.status === "native-auth-present") {
+    const retired = join(PLUGINS_DIR, SHIMS.openai.file);
+    if ((await readFile(retired, "utf8").catch(() => "")).startsWith(MARKER)) await rm(retired, { force: true });
+    await releaseOriginalAuthPlugins(["openai"]);
+  }
+  const root = await resolveDirectory();
   if (!root || !existsSync(join(root, SHIMS.anthropic.entry))) return;
   const handListed = await listedByHand();
   const store = await readStore();
-  const signedIn = (Object.keys(SHIMS) as AccountProvider[]).filter((provider) => store.accounts.some((account) => account.provider === provider));
-  for (const provider of Object.keys(SHIMS) as AccountProvider[]) {
+  const signedIn = (["anthropic"] as AccountProvider[]).filter((provider) => store.accounts.some((account) => account.provider === provider));
+  for (const provider of ["anthropic"] as const) {
     const { file, entry } = SHIMS[provider];
     const path = join(PLUGINS_DIR, file);
     const current = await readFile(path, "utf8").catch(() => undefined);

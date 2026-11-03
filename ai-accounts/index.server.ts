@@ -14,6 +14,7 @@ import { getHealth, getSessions, planBalance, setSessionTier, startBalance } fro
 import { getForceStatus, planForce, startForce } from "./server/force-account";
 import { prepareClaudeSession } from "./server/claude-session";
 import { syncOpenCodePluginsInBackground } from "./server/opencode-shims";
+import { nativeOpenAIStatus } from "./server/native-openai";
 import {
   accountStateRpc,
   balancePlanRpc,
@@ -25,6 +26,7 @@ import {
   forceStartRpc,
   forceStatusRpc,
   modelCatalogRpc,
+  nativeOwnershipRpc,
   removeAccountRpc,
   reopenLoginRpc,
   sessionsRpc,
@@ -35,6 +37,7 @@ import {
 } from "./shared/contracts";
 
 export default function contribute(server: PluginServerContext) {
+  server.handle(nativeOwnershipRpc, nativeOpenAIStatus);
   server.handle(accountStateRpc, getAccountState);
   server.handle(beginLoginRpc, beginLogin);
   server.handle(completeLoginRpc, completeLogin);

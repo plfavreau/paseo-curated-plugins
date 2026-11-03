@@ -32,7 +32,6 @@ import {
   type Candidate,
   type Job,
 } from "./force-account";
-import { cachedClassification, classifierModel, classifyWithLlm } from "./classify";
 import { normalizeUsage } from "./recommendation";
 
 const execFileAsync = promisify(execFile);
@@ -93,12 +92,10 @@ function keywordTier(agent: LiveAgent): { tier: Tier; reason: string } {
   return match ? { tier: "housekeeping", reason: `title mentions "${match[0].toLowerCase()}"` } : { tier: "careful", reason: "no housekeeping signal in the title" };
 }
 
-/** Manual choice, then the last model verdict, then keywords. Reading it never spends an inference. */
+/** Manual choice, then keywords. Reading it never spends an inference. */
 function tierOf(agent: LiveAgent, store: Store): { tier: Tier; source: Session["tierSource"]; reason: string | null } {
   const manual = store.sessionTiers?.[agent.id];
   if (manual) return { tier: manual, source: "manual", reason: "set by you" };
-  const judged = cachedClassification(agent.id);
-  if (judged) return { tier: judged.tier, source: "ai", reason: judged.reason };
   const guess = keywordTier(agent);
   return { tier: guess.tier, source: "auto", reason: guess.reason };
 }
@@ -163,7 +160,7 @@ async function liveAgents(): Promise<LiveAgent[]> {
 
 function buildSession(agent: LiveAgent, store: Store, now: number): Session | null {
   const harness = harnessFor({ provider: agent.provider, model: agent.model ?? null });
-  if (!harness.current) return null;
+  if (!harness.current || harness.current === "openai") return null;
   const sessionId = agent.runtimeInfo?.sessionId ?? undefined;
   const owners = [sessionId, agent.id].filter((owner): owner is string => Boolean(owner));
   const account = resolveAccount(store, harness.current, owners);
@@ -182,7 +179,7 @@ function buildSession(agent: LiveAgent, store: Store, now: number): Session | nu
     tier: judged.tier,
     tierSource: judged.source,
     tierReason: judged.reason,
-    canUse: harness.providers,
+    canUse: ["anthropic"],
     load: loadOf(agent, now),
     workspace: agent.cwd ? basename(agent.cwd) : null,
     workspaceId: agent.workspaceId ?? null,
@@ -199,7 +196,7 @@ async function collect() {
   const now = Date.now();
   const agents = await liveAgents();
   const sessions = agents.map((agent) => buildSession(agent, store, now)).filter((session): session is Session => session !== null);
-  const views = store.accounts.map((account) => viewOf(account, now));
+  const views = store.accounts.filter((account) => account.provider === "anthropic").map((account) => viewOf(account, now));
   return { store, sessions, views, agents };
 }
 
@@ -281,7 +278,7 @@ export async function getSessions(_input: RpcInput<typeof sessionsRpc>) {
       }))
       .sort((a, b) => Number(b.running) - Number(a.running) || (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "")),
     accounts: summarize(views, sessions, (session) => session.account.id),
-    forced: Object.fromEntries(Object.entries(store.preferredAccountIds ?? {}).filter((entry): entry is [string, string] => Boolean(entry[1]))),
+    forced: Object.fromEntries(Object.entries(store.preferredAccountIds ?? {}).filter((entry): entry is [string, string] => entry[0] === "anthropic" && Boolean(entry[1]))),
   };
 }
 
@@ -382,47 +379,12 @@ function placeSessions(sessions: Session[], views: AccountView[], housekeepingTo
   return { placement, notes };
 }
 
-/** One light Codex call per Balance press, covering only conversations the user has not settled by hand. */
-async function classifySessions(sessions: Session[]): Promise<string | null> {
-  const open = sessions.filter((session) => session.tierSource !== "manual" && session.canUse.length > 1);
-  if (open.length === 0) return null;
-  const model = await classifierModel().catch(() => undefined);
-  if (!model) return "No Codex model is available to sort conversations, so housekeeping is guessed from titles.";
-  const outcome = await classifyWithLlm(
-    open.map((session) => ({
-      agentId: session.agentId,
-      sessionId: session.owners.find((owner) => owner.startsWith("ses_")) ?? null,
-      title: session.title,
-      mode: session.mode,
-      workspace: session.workspace,
-      running: session.running,
-    })),
-    model,
-  );
-  for (const session of open) {
-    const verdict = outcome.results.get(session.agentId);
-    if (!verdict) continue;
-    session.tier = verdict.tier;
-    session.tierSource = "ai";
-    session.tierReason = verdict.reason;
-  }
-  if (outcome.error) return `${model.label} could not be reached (${outcome.error}), so housekeeping is guessed from titles.`;
-  const seconds = (outcome.ms / 1000).toFixed(1);
-  return `${model.label} sorted ${outcome.called} conversation${outcome.called === 1 ? "" : "s"} into careful or housekeeping in ${seconds}s${outcome.reused > 0 ? ` (${outcome.reused} reused from the last run)` : ""}.`;
-}
-
 export async function planBalance(input: RpcInput<typeof balancePlanRpc>) {
-  const settings = await withStore((store) => {
-    const next = { ...DEFAULT_BALANCE_SETTINGS, ...store.balanceSettings };
-    if (input.housekeepingToCodex !== undefined) next.housekeepingToCodex = input.housekeepingToCodex;
-    if (input.aiSort !== undefined) next.aiSort = input.aiSort;
-    store.balanceSettings = next;
-    return next;
-  });
+  if (input.housekeepingToCodex || input.aiSort) throw new Error("OpenAI is native-managed; Codex balancing and classification are retired.");
+  const settings = { ...DEFAULT_BALANCE_SETTINGS };
   const { store, sessions, views } = await collect();
-  const classifierNote = settings.aiSort ? await classifySessions(sessions) : null;
   const { placement, notes: placementNotes } = placeSessions(sessions, views, settings.housekeepingToCodex);
-  const notes = [...(classifierNote ? [classifierNote] : []), ...placementNotes];
+  const notes = placementNotes;
   const viewById = new Map(views.map((view) => [view.account.id, view]));
   const moves = sessions.flatMap((session) => {
     const toId = placement.get(session.agentId);
@@ -460,7 +422,7 @@ export async function planBalance(input: RpcInput<typeof balancePlanRpc>) {
     accounts: summarize(views, sessions, finalAccount),
     notes,
     busy: isJobRunning(),
-    releasesForce: Object.values(store.preferredAccountIds ?? {}).some(Boolean),
+    releasesForce: Boolean(store.preferredAccountIds?.anthropic),
   };
 }
 
@@ -473,8 +435,7 @@ const RED_MOVED_LOAD = 2;
  */
 export async function getHealth(_input: RpcInput<typeof healthRpc>) {
   const { store, sessions, views } = await collect();
-  const { housekeepingToCodex } = { ...DEFAULT_BALANCE_SETTINGS, ...store.balanceSettings };
-  const { placement } = placeSessions(sessions, views, housekeepingToCodex);
+  const { placement } = placeSessions(sessions, views, false);
   const viewById = new Map(views.map((view) => [view.account.id, view]));
   const red: string[] = [];
   const orange: string[] = [];
@@ -542,9 +503,9 @@ export async function setSessionTier({ agentId, tier }: RpcInput<typeof setTierR
   const agents = await liveAgents();
   const agent = agents.find((candidate) => candidate.id === agentId);
   if (!agent) throw new Error("Conversation not found");
-  // Back to what the model (or keywords) said means the override is no longer needed.
-  const judged = cachedClassification(agentId) ?? keywordTier(agent);
-  const source = cachedClassification(agentId) ? ("ai" as const) : ("auto" as const);
+  // Back to what the keywords said means the override is no longer needed.
+  const judged = keywordTier(agent);
+  const source = "auto" as const;
   await withStore((store) => {
     store.sessionTiers ??= {};
     if (tier === judged.tier) delete store.sessionTiers[agentId];
@@ -607,7 +568,7 @@ async function runBalance(job: Job, moves: { agentId: string; account: StoredAcc
         pins += 1;
       }
     }
-    if (releaseForced) fresh.preferredAccountIds = {};
+    if (releaseForced && fresh.preferredAccountIds) delete fresh.preferredAccountIds.anthropic;
     return pins;
   });
   if (lookupWarning) console.error(`[${PLUGIN_ID}] ${lookupWarning}`);
@@ -615,7 +576,7 @@ async function runBalance(job: Job, moves: { agentId: string; account: StoredAcc
   store = await readStore();
   const models: Record<AccountProvider, string | null> = {
     anthropic: await providerModel("anthropic", store.preferredModelIds?.anthropic),
-    openai: await providerModel("openai", store.preferredModelIds?.openai),
+    openai: null,
   };
   const candidates = plan.map(({ agent, session, target }) => {
     const candidate: Candidate = {
@@ -643,6 +604,7 @@ export async function startBalance({ moves, releaseForced }: RpcInput<typeof bal
     const agent = agents.get(move.agentId);
     if (!agent) throw new Error("A conversation in the plan is no longer open; plan again");
     const harness = harnessFor({ provider: agent.provider, model: agent.model ?? null });
+    if (harness.current === "openai") throw new Error("Native OpenAI sessions are not managed by Balance");
     if (!harness.providers.includes(account.provider)) {
       throw new Error(`"${agent.title ?? agent.id}" runs on a harness that cannot use ${providerName(account.provider)}`);
     }

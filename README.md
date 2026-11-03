@@ -6,7 +6,7 @@ Custom plugins for [Paseo](https://paseo.sh). Each directory is a standalone plu
 | --- | --- |
 | [`image-preview`](./image-preview) | Renders inline thumbnails for image files the agent reads, instead of a plain text row. |
 | [`system-health`](./system-health) | Sidebar pills for CPU, RAM and disk usage, with a Clean button that prompts a session of your choice. |
-| [`ai-accounts`](./ai-accounts) | Sign in several Claude and ChatGPT subscriptions, see their limits, and move conversations between them. |
+| [`ai-accounts`](./ai-accounts) | Manage multiple Claude subscriptions; OpenAI uses one native OpenCode account. |
 | [`pin-notes`](./pin-notes) | Pin notes and links to a conversation, shown as pills above the composer with the page title and favicon. |
 
 ## Install
@@ -74,14 +74,14 @@ Pins are stored on the daemon machine in `~/.paseo/plugin-data/pin-notes/pins.js
 
 ## ai-accounts
 
-Sign in several Claude and ChatGPT (Codex) subscriptions and spread conversations across them. Every conversation gets a composer pill with its account and usage; click it to move the conversation to another account. The AI accounts screen shows every account's 5-hour and weekly limits, and a **Balance** button proposes moves to even out the load before anything changes.
+Sign in several Claude subscriptions and spread Claude conversations across them. Each Claude conversation gets a pill with its account and usage; click it to switch accounts. The accounts screen shows limits and a **Balance** button proposes Claude-only moves before anything changes.
 
-New conversations start on the account furthest behind its usage pace. Mark one as **Default** to pin new conversations to it instead.
+New Claude conversations start on the account furthest behind its usage pace. Mark one as **Default** to pin new Claude conversations to it instead. Claude Code keychain namespaces, session preparation and the OpenCode Anthropic auth wrapper are unchanged.
 
 ### Requirements
 
 - Paseo 0.12 or later.
-- OpenCode for Claude and Codex accounts, Claude Code for Claude accounts.
+- Stock upstream OpenCode for Claude and native OpenAI; Claude Code for Claude accounts.
 - macOS for Claude Code: each account's credentials live in their own Keychain entry.
 - `sqlite3` on `PATH` (shipped with macOS).
 
@@ -89,37 +89,44 @@ The Codex CLI keeps its own login, so its conversations get no pill.
 
 ### OpenCode setup
 
-As soon as you add a Claude or Codex account, the Paseo plugin drops a one-line file for that provider into `~/.config/opencode/plugins/` (`ai-accounts-anthropic.ts`, `ai-accounts-codex.ts`), which OpenCode loads on its own. Removing the provider's last account removes the file. Without any account, OpenCode is left untouched. Claude wraps [`@ex-machina/opencode-anthropic-auth`](https://www.npmjs.com/package/@ex-machina/opencode-anthropic-auth); Codex decorates OpenCode's **built-in OpenAI OAuth loader**, not a third-party auth or prompt transformer.
+Claude accounts install `ai-accounts-anthropic.ts` in OpenCode's global plugins directory and wrap [`@ex-machina/opencode-anthropic-auth`](https://www.npmjs.com/package/@ex-machina/opencode-anthropic-auth). Existing Claude login import and renewal behavior is preserved.
 
-Before installing ai-accounts for a Minitap teammate, provision the OpenCode build with the `auth.loader` middleware hook and `PluginInput.capabilities.authLoaderMiddleware` from the umbrella:
+OpenAI is **native managed, single account per teammate/host**. Use stock upstream OpenCode, with its native OpenAI login, model handling, prompts, tools, HTTP and WebSocket transport. No core patch or auth-loader middleware is required. Sign in using the native CLI on the daemon host:
 
 ```sh
-make opencode-native
+opencode auth login
 ```
 
-This is a required team provisioning step, not a dependency on a developer's local checkout. Stock OpenCode 1.18.26 does not expose the hook. Keep the narrow core patch when updating OpenCode until an equivalent upstream extension exists. Outside the umbrella, an equivalent middleware-capable build must be provisioned before installation.
+Choose OpenAI / ChatGPT, but first complete the legacy-process drain below. This plugin runtime does not offer OpenAI login, assignment, account deletion, default selection, usage polling, token refresh, auto-balance or LLM sorting. Old OpenAI records and metadata remain in `accounts.json`, inactive and never copied into native auth. An existing independent native OAuth or API-key login is left intact; the status check is structural and does not remotely validate credentials. Old OpenCode processes can still refresh broker tokens until fully retired, regardless of new files on disk.
 
-Unsupported builds load OpenAI-only rejection hooks and block inference with the upgrade instruction. Throwing during plugin initialization is unsafe: OpenCode catches that error, discards the broker, and can silently use its default login instead of the assigned account. Anthropic remains unaffected; there is no legacy third-party Codex fallback or opt-out flag. After provisioning, restart ONLY affected idle OpenCode processes; running processes keep their loaded binary and plugin code. Reload this plugin if needed with `paseo plugin reload ai-accounts`; **never restart the Paseo daemon**. Leave the Homebrew binary intact and do not delete account data.
+### Native OpenAI handoff
 
-If you already signed in to Claude or Codex in OpenCode, that login is imported as an account, so you don't sign in again. Both providers rotate refresh tokens, so ai-accounts owns refresh for broker-managed requests. Once a provider has an account, the plugin removes its original external auth plugin (`@ex-machina/opencode-anthropic-auth` or `opencode-openai-codex-auth`) from the global `opencode.json` / `opencode.jsonc`, keeping a `.bak-ai-accounts-<time>` copy next to it, and the accounts screen says so for a day. The built-in OpenAI plugin and its native login/model hooks remain enabled. Remove other external auth replacements by hand.
+This source change does not deploy itself. Provisioning must coordinate these steps. Auth presence, plugin attestation and process retirement are separate conditions; none alone authorizes native inference:
 
-A conversation started before the handover still runs the original plugin until it restarts, and may rotate OpenCode's copy of the login. When renewal then fails, ai-accounts picks up that newer token from OpenCode's `auth.json` instead of asking you to sign in again.
+1. Pause new OpenCode launches. Inspect the affected process/server inventory and obtain user permission before retiring anything. Let running turns finish, then fully retire the old OAuth-using OpenCode processes, **including idle servers**, before native login or inference. Changing source, replacing a launcher or loading a new Paseo plugin does not unload their broker. Do not infer retirement from a process timestamp, plugin source text or an idle agent. Do not restart Paseo or kill/restart processes automatically.
+2. After intentional deployment, query the **loaded** plugin from `ai-accounts` with `bun scripts/native-handoff.mjs --attest-only`. It calls the dedicated read-only RPC `invokePluginRpc("ai-accounts", "ai-accounts.native-ownership", {})` on the loopback daemon. An older plugin rejects the unknown method without invoking its old, potentially mutating state migration. Exit 0 means a valid versioned response with structurally present native auth only; this mode always prints `handoffReady: false`. Missing/unknown versions, missing/unreadable auth, unavailable RPC and non-local endpoints exit 2. Never substitute source-text inspection for this probe.
+3. Require `ownership.ownershipVersion === 1` and `ownership.status === "native-auth-present"`. Version 1 attests only that the responding plugin runtime no longer imports, refreshes or routes OpenAI broker credentials. It does **not** attest old-process retirement, binary selection, config cleanup or remote token validity. The existing state RPC `ai-accounts.state` with `{ "provider": "openai", "refreshUsage": false }` exposes the same object as `nativeOpenAI`, but do not probe an unknown old runtime through that RPC because old state handlers can migrate credentials.
+4. An absent/empty OAuth entry, invalid shape or reserved `ai-accounts-broker-bootstrap` sentinel is **not** usable auth. Require native login after the drain before declaring handoff ready. Do not restore stored broker tokens, even if one appears current. Unreadable auth requires operator inspection, not overwrite.
+5. Only when native auth is structurally present does startup synchronization remove a marker-owned `ai-accounts-codex.ts` shim and recognized OpenAI entries from global config. Missing/sentinel/unreadable auth leaves those OpenAI shim/config entries intact and logs pending login; Claude synchronization continues independently. It never creates an OpenAI shim. Unowned files remain for operator inspection.
+6. Recognized config entries are `opencode-openai-codex-auth` and manual `ai-accounts/opencode-codex-plugin.ts` paths in the top-level `plugin` array of `opencode.json` / `opencode.jsonc`. Removal creates a private `.bak-ai-accounts-*` backup and preserves unrelated settings/comments. Malformed or ambiguous configs and project-local overrides need manual review. Never restore a whole old config backup, which would reintroduce interception. The old manual Codex entry point is a no-op for references not yet removed.
+7. After the operator has verified retirement, run `bun scripts/native-handoff.mjs --confirm-legacy-retired` on the daemon host. It still blocks on **any** recognizable local OpenCode process (conservatively including stock servers), failed process inspection, unavailable/old live plugin or missing native auth. Exit 0 requires all gates; exit 2 reports pending. It returns PIDs, never argv or tokens, and never stops anything. This flag confirms operator review, not permission to kill. Renamed, wrapped or remote processes sharing the credentials require explicit operator inspection beyond `ps`; the scan is point-in-time, not a launch lock. Keep launches paused through the handoff.
+8. Once all gates and config/launcher review pass, the umbrella's separate provisioning flow may launch stock OpenCode and verify a native request. Re-running the conservative drain gate after new servers start will block again by design. This repo neither provisions nor patches OpenCode. No safe overlap with old broker refresh ownership is claimed.
 
-When no native OpenAI login exists, ai-accounts writes an empty OAuth activation sentinel, marked by the reserved `accountId` `ai-accounts-broker-bootstrap`. Native activation and model selection require only `type: "oauth"`; only broker-selected credentials ever reach native fetch. No live broker tokens are copied to `auth.json`. Migration ignores the sentinel, and removing the last broker account removes only that exact empty sentinel, so deleted accounts cannot be reimported from it. Independent native OAuth and API-key logins are never overwritten or removed. An existing API-key login blocks broker OpenAI inference with an instruction to migrate the native login to ChatGPT OAuth; silently mixing API-mode prompts with OAuth transport is unsafe.
+The exact dedicated RPC response is `{ "ownershipVersion": 1, "status": "native-auth-present" | "native-login-required" | "unreadable", "message": "..." }`. The CLI's `--attest-only` wraps it as `{ "handoffReady": false, "ownership": <response>, "message": "..." }`; the full gate returns `{ "ready": boolean, "reason": "...", ... }`. Unknown versions and missing fields fail closed. These read-only commands never renew credentials or write configs.
 
-Each Codex request pins one account snapshot, refreshes that account before delegating to native fetch, and retries a 401 once against the same account even if its assignment changes. A rejected refresh can recover from a native-rotated login only after validating its email and pinned account ID, and validating the refreshed identity again; it cannot switch to another workspace with the same email. WebSocket pools are isolated by account and credential fingerprint; session IDs, instructions (including AGENTS and skill guidance), tools, and request bodies are unchanged. Missing assigned accounts and accounts requiring sign-in fail closed. OpenCode's global OAuth entry is initialized only when absent for provider activation; requests never swap global credentials. Native transport still owns endpoint/residency headers, Responses, WebSockets and their cleanup. The obsolete third-party Codex dependency and model-rewriting patch are removed.
+No migration code deletes or writes OpenAI auth, refreshes a broker credential, or imports native OpenAI credentials. The old sentinel is diagnosed, not silently repaired. Claude migration/renewal may still update Claude's auth as before.
 
-### Balance options
+### Verification
 
-Balance sorts conversations into careful work and housekeeping, by title by default. Two switches in the plan, both off at first and remembered:
+CI pins Node 22.22.2 and Bun 1.3.14: `npm ci --include=dev`, `npm run typecheck`, `npm test`. Regressions use temporary config/data and synthetic credentials, mock Claude keychain and Paseo access, and prove inactive OpenAI records survive, UI refresh makes no OpenAI requests, sentinel detection, scoped config cleanup and unchanged Claude routing/session preparation.
 
-- **Send housekeeping to Codex** moves housekeeping conversations from Claude to Codex.
-- **Sort conversations with a Codex model** asks the smallest Codex model in your catalog to sort them instead of guessing from titles. It sends each conversation's title, project name, tool counts and first and latest request (truncated) to OpenAI through your own Codex account, once per Balance.
+`OPENCODE_SOURCE=/path/to/stock/opencode npm run test:native` exercises the actual unmodified upstream v1.18.26 native adapter at commit `774cc7c1914e4329eefde5a669f938b0cf566661`, after `bun install --frozen-lockfile` there. It verifies native login/model hooks, HTTP/WebSocket requests with unchanged instructions/tools, pool reuse, HTTP fallback and native refresh/writeback against a synthetic loopback server. It neither patches source nor composes an auth-loader middleware. It is an adapter integration fixture, not a live account or full CLI end-to-end test.
+
 
 ### Good to know
 
 - Logins use the same public OAuth clients as Claude Code and the Codex CLI. Using a subscription outside the vendor's own tools may be against its terms; you decide.
-- Tokens are stored in `~/.local/share/ai-accounts/accounts.json` (mode 600) and, for Claude Code, in the macOS Keychain. Removing an account deletes both.
+- Claude tokens are stored in `~/.local/share/ai-accounts/accounts.json` (mode 600) and, for Claude Code, in the macOS Keychain. Removing a Claude account deletes both. Legacy OpenAI records cannot be deleted through this UI.
 - Claude Code reads credentials from a per-account Keychain entry through an undocumented setting, so a Claude Code update could break switching there. `/status` inside Claude Code shows your own email for every account; the account in use is the one the pill shows.
 
 ## License

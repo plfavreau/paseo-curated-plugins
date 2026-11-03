@@ -173,7 +173,7 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
   const openaiModels = useQuery({
     queryKey: ["ai-account-models", "openai"],
     queryFn: () => getModelCatalog({ provider: "openai" }),
-    enabled: usesModelCatalog && harness.providers.includes("openai"),
+    enabled: false,
     staleTime: 5 * 60_000,
   });
   const { running: forceRunning, visibleJob: forceJob, dismiss: dismissForceJob } = useForceJob();
@@ -367,13 +367,13 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
           <Text style={ui.pageTitle}>AI accounts</Text>
           <Text style={ui.pageSubtitle}>
             {allSessions
-              ? "Balance conversations across your subscriptions. Picking an account forces every conversation onto it: running ones are paused, switched and resumed."
-              : "Each conversation keeps its own account. Pick one to switch this conversation."}
+              ? "Balance Claude conversations across subscriptions. OpenAI uses one native OpenCode account."
+              : "Claude conversations keep their own account. OpenAI is managed by native OpenCode."}
           </Text>
         </View>
       )}
 
-      {isTurnActive ? (
+      {isTurnActive && currentProvider !== "openai" ? (
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <ActivityIndicator color={c.foregroundMuted} size="small" />
           <Text style={[ui.footnote, { paddingHorizontal: 0 }]}>Responding. Switching unlocks when this turn ends.</Text>
@@ -385,6 +385,15 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
       {allSessions ? <SessionsOverview theme={theme} layout={layout} locked={forceRunning} /> : null}
 
       {harness.providers.map((provider) => {
+        if (provider === "openai") return (
+          <View key={provider} style={{ gap: 8 }}>
+            <SectionHead theme={theme} title="OpenAI" leading={<ProviderLogo provider={provider} size={22} />} />
+            <Text style={ui.primary}>Native managed, single account</Text>
+            <Text style={ui.secondary}>{openaiState.data?.nativeOpenAI?.message ?? "Use native OpenCode login: opencode auth login, then choose OpenAI / ChatGPT."}</Text>
+            {openaiState.data?.nativeOpenAI && openaiState.data.nativeOpenAI.status !== "native-auth-present" ? <Text style={ui.danger}>Native login required or auth unreadable. Do not deploy an empty broker sentinel as a credential.</Text> : null}
+            <Text style={ui.footnote}>Old multiaccount records are preserved but inactive. Login, refresh and account selection belong to stock OpenCode.</Text>
+          </View>
+        );
         const brand = BRAND[provider];
         const state = states[provider];
         const modelCatalog = modelCatalogs[provider];
@@ -495,9 +504,7 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
               <Text style={ui.secondary}>
                 {reauthEmail
                   ? "This replaces the stored tokens. The account and its conversations stay as they are."
-                  : login.provider === "openai"
-                    ? "After approving in ChatGPT, paste the full localhost URL from your address bar."
-                    : "After approving in Claude, paste the callback URL or code#state value."}
+                  : "After approving in Claude, paste the callback URL or code#state value."}
               </Text>
               <Text style={ui.secondary}>
                 {login.browserOpened ? "Opened in your Mac's browser. On your phone? Open it here instead." : "Could not open a browser on your Mac. Open it here, or copy the link."}

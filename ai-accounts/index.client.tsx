@@ -3,7 +3,6 @@ import type { PluginButton, PluginButtonIconProps, PluginButtonRegistration, Plu
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { View } from "react-native";
 import { HealthPill, useHealth } from "./client/health-pill";
-import { HostHint, HostHover } from "./client/host-hover";
 import { AccountsPanel, AccountsPopover, AccountsScreen, countdown, subscribeAccountSwitches } from "./client/accounts-panel";
 import { type AccountProvider, harnessFor } from "./client/harness";
 import { accountStateRpc, setPreferredAccountRpc, USABILITY_CEILING } from "./shared/contracts";
@@ -31,19 +30,15 @@ function BadDot({ size, theme }: PluginButtonIconProps) {
   return <View style={{ width: diameter, height: diameter, borderRadius: diameter / 2, backgroundColor: theme.colors.statusDanger }} />;
 }
 
-function SettingsSidebarItem({ currentScreen, openScreen, theme, host }: PluginSidebarItemProps) {
+function SettingsSidebarItem({ currentScreen, openScreen, theme }: PluginSidebarItemProps) {
   const health = useHealth();
   return (
-    <HostHover>
-      {(hovered) => (
-        <SidebarRow
-          icon="UsersRound"
-          active={currentScreen?.screenId === "settings"}
-          onPress={() => openScreen({ screenId: "settings" })}
-          trailing={hovered ? <HostHint theme={theme} hostLabel={host.label} onPress={() => openScreen({ screenId: "settings" })} /> : <HealthPill theme={theme} level={health.data?.level} compact />}
-        />
-      )}
-    </HostHover>
+    <SidebarRow
+      icon="UsersRound"
+      active={currentScreen?.screenId === "settings"}
+      onPress={() => openScreen({ screenId: "settings" })}
+      trailing={<HealthPill theme={theme} level={health.data?.level} compact />}
+    />
   );
 }
 

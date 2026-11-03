@@ -2,30 +2,21 @@ import type { PluginClientContext, PluginSidebarItemProps } from "@getpaseo/plug
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { Pressable } from "react-native";
 import { CleanupScreen, HealthPopover, SidebarPills } from "./client/health";
-import { HostHint, HostHover } from "./client/host-hover";
 import { CleanupSettings } from "./client/settings";
 
-function HealthItem({ host, theme, openPopover }: PluginSidebarItemProps) {
+function HealthItem({ openPopover }: PluginSidebarItemProps) {
   const open = () => openPopover(HealthPopover);
   return (
-    <HostHover>
-      {(hovered) => (
-        <SidebarRow
-          icon="Activity"
-          label=""
-          onPress={open}
-          trailing={
-            hovered ? (
-              <HostHint theme={theme} hostLabel={host.label} onPress={open} />
-            ) : (
-              <Pressable accessibilityRole="button" accessibilityLabel="System health" onPress={open}>
-                <SidebarPills />
-              </Pressable>
-            )
-          }
-        />
-      )}
-    </HostHover>
+    <SidebarRow
+      icon="Activity"
+      label=""
+      onPress={open}
+      trailing={
+        <Pressable accessibilityRole="button" accessibilityLabel="System health" onPress={open}>
+          <SidebarPills />
+        </Pressable>
+      }
+    />
   );
 }
 

@@ -44,7 +44,7 @@ export function SidebarPills() {
   const stats = useStats();
   if (!stats.data) return stats.isLoading ? <ActivityIndicator size="small" /> : null;
   return (
-    <View style={{ flexDirection: "row", gap: 4 }}>
+    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
       {METRICS.map(({ key, label }) => (
         <Pill key={key} label={label} percent={stats.data[key].percent} />
       ))}
@@ -105,7 +105,7 @@ function SessionPicker({ theme, sessions, selectedId, onPick }: { theme: Theme; 
   );
 }
 
-export function HealthPopover({ theme, close, openScreen }: PluginPopoverProps) {
+export function HealthPopover({ theme, host, close, openScreen }: PluginPopoverProps) {
   const stats = useStats();
   const settings = useSettings(preferences);
   const [picking, setPicking] = useState(false);
@@ -120,9 +120,9 @@ export function HealthPopover({ theme, close, openScreen }: PluginPopoverProps) 
     mutationFn: () => {
       const d = stats.data;
       const summary = d ? `CPU ${d.cpu.percent}%, RAM ${d.ram.percent}% (${d.ram.detail}), disk ${d.disk.percent}% (${d.disk.detail})` : "stats unavailable";
-      return clean({ stats: summary });
+      return clean({ stats: `Host: ${host.label}. ${summary}` });
     },
-    onSuccess: ({ agentId }) => openScreen({ screenId: "cleanup", params: { agentId } }),
+    onSuccess: ({ agentId }) => openScreen({ screenId: "cleanup", params: { agentId, hostLabel: host.label } }),
   });
 
   async function pick(id: string) {
@@ -135,7 +135,7 @@ export function HealthPopover({ theme, close, openScreen }: PluginPopoverProps) 
 
   return (
     <View style={{ padding: 16, gap: 14, minWidth: 280, maxWidth: 340 }}>
-      <Text style={{ color: theme.colors.foreground, fontSize: 15, fontWeight: "600" }}>System health</Text>
+      <Text style={{ color: theme.colors.foreground, fontSize: 15, fontWeight: "600" }}>System health · {host.label}</Text>
       {stats.data ? (
         METRICS.map(({ key, label }) => {
           const m = stats.data[key];
@@ -156,7 +156,7 @@ export function HealthPopover({ theme, close, openScreen }: PluginPopoverProps) 
       )}
 
       <View style={{ gap: 6 }}>
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>Send cleanup prompt to</Text>
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>Send cleanup prompt on {host.label} to</Text>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Choose the session that receives the cleanup message"
@@ -173,7 +173,7 @@ export function HealthPopover({ theme, close, openScreen }: PluginPopoverProps) 
 
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel="Send a cleanup round to the selected session"
+        accessibilityLabel={`Send a cleanup round on ${host.label} to the selected session`}
         disabled={!canClean}
         onPress={() => mutation.mutate()}
         style={{ paddingVertical: 10, borderRadius: 8, backgroundColor: theme.colors.accent, opacity: canClean ? 1 : 0.5 }}
@@ -191,14 +191,14 @@ export function HealthPopover({ theme, close, openScreen }: PluginPopoverProps) 
 }
 
 /** Opened after Clean: jumps straight to the receiving session. */
-export function CleanupScreen({ theme, navigation, params }: PluginScreenProps) {
+export function CleanupScreen({ theme, host, navigation, params }: PluginScreenProps) {
   const agentId = params.agentId;
   useEffect(() => {
     if (agentId) navigation?.openAgent({ agentId });
   }, [navigation, agentId]);
   return (
     <View style={{ flex: 1, padding: 24, gap: 12, backgroundColor: theme.colors.surface0 }}>
-      <Text style={{ color: theme.colors.foreground, fontSize: 16 }}>Cleanup round sent.</Text>
+      <Text style={{ color: theme.colors.foreground, fontSize: 16 }}>Cleanup round sent on {host.label}.</Text>
       {navigation && agentId ? (
         <Pressable accessibilityRole="button" onPress={() => navigation.openAgent({ agentId })}>
           <Text style={{ color: theme.colors.accent }}>Open the session</Text>

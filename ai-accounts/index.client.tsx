@@ -30,11 +30,12 @@ function BadDot({ size, theme }: PluginButtonIconProps) {
   return <View style={{ width: diameter, height: diameter, borderRadius: diameter / 2, backgroundColor: theme.colors.statusDanger }} />;
 }
 
-function SettingsSidebarItem({ currentScreen, openScreen, theme }: PluginSidebarItemProps) {
+function SettingsSidebarItem({ currentScreen, openScreen, theme, host }: PluginSidebarItemProps) {
   const health = useHealth();
   return (
     <SidebarRow
       icon="UsersRound"
+      label={`AI accounts · ${host.label}`}
       active={currentScreen?.screenId === "settings"}
       onPress={() => openScreen({ screenId: "settings" })}
       trailing={<HealthPill theme={theme} level={health.data?.level} compact />}
@@ -58,7 +59,7 @@ export default function contribute(client: PluginClientContext) {
     Component: AccountsPanel,
   });
   client.addScreen({ id: "settings", title: "AI accounts", Component: AccountsScreen });
-  client.addSidebarHeaderItem({ id: "settings", title: "AI accounts", Component: SettingsSidebarItem });
+  client.addSidebarFooterItem({ id: "settings", title: "AI accounts", Component: SettingsSidebarItem });
   client.addCommandCenterItem({
     id: "open-provider-settings",
     title: "AI accounts (all sessions)",

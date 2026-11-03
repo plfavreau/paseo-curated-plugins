@@ -32,7 +32,7 @@ import { removeNamespace } from "./claude-keychain";
 import { syncOpenCodePluginsInBackground } from "./opencode-shims";
 import { PLUGIN_ID, daemonUrl, paseoCliPath } from "./environment";
 import { nextRecovery, normalizeUsage, recommendAccount, toRecommendationAccount } from "./recommendation";
-import { nativeOpenAIStatus, requireManagedProvider } from "./native-openai";
+import { NATIVE_OPENAI_ACCOUNT_ID, nativeOpenAIAccount, nativeOpenAIStatus, requireManagedProvider } from "./native-openai";
 
 const SESSION_ID_TTL_MS = 15_000;
 const sessionIds = new Map<string, { sessionId?: string; fetchedAt: number }>();
@@ -157,7 +157,7 @@ async function restoreAgentModel(agentId: string, modelId: string | null): Promi
 }
 
 function providerName(provider: AccountProvider): string {
-  return provider === "anthropic" ? "Claude" : "Codex";
+  return provider === "anthropic" ? "Claude" : "OpenAI";
 }
 
 function base64Url(bytes: Uint8Array): string {
@@ -187,11 +187,7 @@ export async function getAccountState(
   { provider, agentId, refreshUsage: shouldRefresh }: RpcInput<typeof accountStateRpc>,
   context: PluginHandlerContext,
 ) {
-  if (provider === "openai") return {
-    accounts: [], nativeOpenAI: await nativeOpenAIStatus(), activeAccountId: null, launchedAccountId: null,
-    recommendedAccountId: null, recommendedProvider: null, recommendationReason: null,
-    preferredAccountId: null, openCodeHandover: null, exhausted: false, recovery: null,
-  };
+  if (provider === "openai") return nativeOpenAIState(Boolean(shouldRefresh));
   if ((await migrateOpenCodeAccounts()).length > 0) syncOpenCodePluginsInBackground();
   let store = await readStore();
   if (shouldRefresh) {
@@ -238,6 +234,77 @@ export async function getAccountState(
         }
       : null,
   };
+}
+
+/** The native login is the only OpenAI account, so it is always the one in use and the default. */
+async function nativeOpenAIState(refresh: boolean) {
+  const [nativeOpenAI, native] = await Promise.all([nativeOpenAIStatus(), nativeOpenAIAccount(refresh)]);
+  const usage = native ? normalizeUsage("openai", native.usage) : [];
+  const ranked = native ? [{ id: NATIVE_OPENAI_ACCOUNT_ID, provider: "openai" as const, email: native.email, usage }] : [];
+  const recovery = usage.length > 0 && !recommendAccount(ranked) ? nextRecovery(ranked) : null;
+  return {
+    accounts: native
+      ? [{
+          id: NATIVE_OPENAI_ACCOUNT_ID,
+          provider: "openai" as const,
+          email: native.email,
+          plan: native.plan,
+          isDefault: true,
+          isAssigned: true,
+          usage,
+          usageFetchedAt: native.usageFetchedAt,
+          usageError: native.usageError,
+          needsReauth: false,
+        }]
+      : [],
+    nativeOpenAI,
+    activeAccountId: native ? NATIVE_OPENAI_ACCOUNT_ID : null,
+    launchedAccountId: null,
+    recommendedAccountId: null,
+    recommendedProvider: null,
+    recommendationReason: null,
+    preferredAccountId: null,
+    openCodeHandover: null,
+    exhausted: recovery !== null,
+    recovery: recovery
+      ? { accountId: NATIVE_OPENAI_ACCOUNT_ID, email: recovery.account.email, label: recovery.window.label, resetsAt: recovery.window.resetsAt }
+      : null,
+  };
+}
+
+/** Moves an OpenCode conversation onto OpenAI by switching its model; native OpenCode supplies the login. */
+async function switchToNativeOpenAI(agentId: string, accountId: string) {
+  if (accountId !== NATIVE_OPENAI_ACCOUNT_ID) requireManagedProvider("openai");
+  if ((await nativeOpenAIStatus()).status !== "native-auth-present") throw new Error("Sign in to OpenAI first: run opencode auth login and choose OpenAI / ChatGPT.");
+  const daemon = createDaemonClient();
+  let previousModelId: string | null = null;
+  let modelChanged = false;
+  try {
+    await daemon.connect();
+    const current = await daemon.fetchAgent(agentId);
+    if (!current) throw new Error("Conversation not found");
+    if (current.agent.status === "running" || current.agent.status === "initializing") {
+      throw new Error("Wait for the current response to finish before switching");
+    }
+    if (!(current.agent.provider ?? "").startsWith("opencode")) throw new Error("Only OpenCode conversations can move to OpenAI");
+    previousModelId = current.agent.model ?? null;
+    const store = await readStore();
+    const modelId = await providerModel("openai", store.preferredModelIds?.openai);
+    if (!modelId) throw new Error("No OpenAI model is available in OpenCode");
+    if (previousModelId !== modelId) {
+      await daemon.setAgentModel(agentId, modelId);
+      modelChanged = true;
+    }
+    await daemon.close();
+    await reloadAgent(agentId);
+    return { activeAccountId: NATIVE_OPENAI_ACCOUNT_ID, modelId, reloaded: true };
+  } catch (error) {
+    try {
+      if (daemon.isConnected) await daemon.close();
+    } catch {}
+    if (modelChanged) await restoreAgentModel(agentId, previousModelId).catch(() => {});
+    throw new Error(`Conversation switch was rolled back: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 export async function beginLogin({ provider }: RpcInput<typeof beginLoginRpc>) {
@@ -319,7 +386,7 @@ export async function completeLogin({ flowId, callback }: RpcInput<typeof comple
 }
 
 export async function switchAccount({ provider, agentId, accountId }: RpcInput<typeof switchAccountRpc>) {
-  requireManagedProvider(provider);
+  if (provider === "openai") return switchToNativeOpenAI(agentId, accountId);
   const daemon = createDaemonClient();
   let previousModelId: string | null = null;
   const store = await readStore();
@@ -417,7 +484,7 @@ export async function getModelCatalog({ provider }: RpcInput<typeof modelCatalog
 }
 
 export async function setModelPreference({ provider, modelId }: RpcInput<typeof setPreferredModelRpc>) {
-  requireManagedProvider(provider);
+  // Only a model choice for switches; it touches no OpenAI login or account record.
   const models = await availableProviderModels(provider);
   if (!models.some((model) => model.id === modelId)) throw new Error(`${providerName(provider)} model not found`);
   await setPreferredModel(provider, modelId);

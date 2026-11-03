@@ -301,7 +301,6 @@ export async function setPreferredAccount(provider: AccountProvider, accountId: 
 }
 
 export async function setPreferredModel(provider: AccountProvider, modelId: string): Promise<void> {
-  requireManagedProvider(provider);
   await withStore((store) => {
     (store.preferredModelIds ??= {})[provider] = modelId;
   });

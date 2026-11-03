@@ -30,6 +30,8 @@ mock.module("@getpaseo/client/internal/daemon-client", () => ({
     async fetchAgents() { return { entries: agents.map((agent) => ({ agent })), pageInfo: {} }; }
     async fetchWorkspaces() { return { entries: [], pageInfo: {} }; }
     async listProviderModels() { return { models: [] }; }
+    async fetchAgent(id) { const agent = agents.find((candidate) => candidate.id === id); return agent ? { agent } : null; }
+    async setAgentModel(...args) { rpcCalls.push(["setAgentModel", ...args]); }
     async invokePluginRpc(...args) { rpcCalls.push(args); return rpcResult; }
   },
 }));
@@ -39,7 +41,7 @@ const balance = await import("../server/balance.ts");
 const force = await import("../server/force-account.ts");
 const { syncOpenCodePlugins } = await import("../server/opencode-shims.ts");
 const { withoutPluginEntry } = await import("../server/opencode-handover.ts");
-const { nativeOpenAIStatus } = await import("../server/native-openai.ts");
+const { nativeOpenAIStatus, resetNativeOpenAIUsageCache, NATIVE_OPENAI_ACCOUNT_ID } = await import("../server/native-openai.ts");
 const { liveNativeOwnership, nativeHandoffReadiness, openCodeProcessIds } = await import("../server/native-handoff.ts");
 const { prepareClaudeSession } = await import("../server/claude-session.ts");
 const { wrapAuthPlugin } = await import("../opencode-auth-wrapper.ts");
@@ -66,6 +68,7 @@ beforeEach(async () => {
   rpcCalls = [];
   rpcResult = undefined;
   keychainWrites.length = 0;
+  resetNativeOpenAIUsageCache();
   globalThis.fetch = async (url) => { calls.push(String(url)); throw new Error("Unexpected network request"); };
 });
 afterAll(async () => {
@@ -74,23 +77,43 @@ afterAll(async () => {
   await rm(scratch, { recursive: true, force: true });
 });
 
-test("OpenAI UI refresh never imports, rotates, writes auth, or mutates old records", async () => {
+const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const jwt = (claims) => `e30.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`;
+const claimed = { ...native, access: jwt({ "https://api.openai.com/profile": { email: "native@example.invalid" }, "https://api.openai.com/auth": { chatgpt_plan_type: "pro", chatgpt_account_id: "acct-synthetic" } }) };
+let requests = [];
+const usageServer = (respond) => {
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push(String(url));
+    requests.push({ url: String(url), method: init.method ?? "GET", headers: init.headers ?? {}, body: init.body });
+    return respond(String(url));
+  };
+};
+
+test("OpenAI UI refresh reads native usage only, never imports, rotates, writes auth, or mutates old records", async () => {
+  requests = [];
   await writeFile(authPath, JSON.stringify({ openai: native }));
   const beforeStore = await readFile(storePath, "utf8");
   const beforeAuth = await readFile(authPath, "utf8");
+  usageServer(() => Response.json({ rate_limit: { primary_window: { used_percent: 31, limit_window_seconds: 604800, reset_at: 1893456000 } } }));
   const state = await accounts.getAccountState({ provider: "openai", agentId: "agent", refreshUsage: true }, {});
   accountStateRpc.output.parse(state);
-  assert.deepEqual(state.accounts, []);
+  assert.equal(state.accounts.length, 1);
+  assert.equal(state.accounts[0].id, NATIVE_OPENAI_ACCOUNT_ID);
+  assert.deepEqual(state.accounts[0].usage.map((window) => [window.label, window.utilization]), [["7-day", 31]]);
+  assert.equal(state.accounts[0].isDefault, true);
   assert.equal(state.nativeOpenAI.status, "native-auth-present");
   assert.equal(state.nativeOpenAI.ownershipVersion, 1);
-  assert.equal(state.activeAccountId, null);
+  assert.equal(state.activeAccountId, NATIVE_OPENAI_ACCOUNT_ID);
+  assert.ok(!JSON.stringify(state).includes("synthetic-native"), "state never carries the token");
   assert.equal(store.resolveAccount(await store.readStore(), "openai", "agent"), undefined);
   await store.migrateOpenCodeAccounts();
   await store.refreshStaleUsage((await store.readStore()).accounts);
   await store.refreshUsage("openai");
   assert.equal(await readFile(storePath, "utf8"), beforeStore);
   assert.equal(await readFile(authPath, "utf8"), beforeAuth);
-  assert.deepEqual(calls, []);
+  assert.deepEqual(calls, [USAGE_URL]);
+  assert.equal(requests[0].method, "GET");
+  assert.equal(requests[0].headers.Authorization, "Bearer synthetic-native");
   assert.deepEqual(keychainWrites, []);
 });
 
@@ -156,7 +179,6 @@ test("all old OpenAI mutation and credential entry points refuse before side eff
     () => accounts.switchAccount({ provider: "openai", agentId: "agent", accountId: "openai" }),
     () => accounts.removeAccount({ provider: "openai", accountId: "openai" }),
     () => accounts.setPreferred({ provider: "openai", accountId: "openai" }),
-    () => accounts.setModelPreference({ provider: "openai", modelId: "openai/gpt-5" }),
     () => store.saveAccount("openai", native),
     () => store.ensureFreshAccount("openai"),
     () => store.forceRefreshAccount("openai"),
@@ -167,6 +189,8 @@ test("all old OpenAI mutation and credential entry points refuse before side eff
     () => balance.planBalance({ housekeepingToCodex: true }),
     () => balance.startBalance({ moves: [{ agentId: "agent", accountId: "openai" }] }),
   ]) await assert.rejects(run, /native|OpenAI/);
+  // The OpenAI model preference is a plain choice for switches, validated against the live catalog.
+  await assert.rejects(accounts.setModelPreference({ provider: "openai", modelId: "openai/gpt-5" }), /OpenAI model not found/);
   assert.equal(await readFile(storePath, "utf8"), before);
   assert.deepEqual(calls, []);
 });
@@ -421,4 +445,82 @@ test("Claude wrapper still substitutes assigned auth and leaves native OpenAI se
   await loaded.fetch("https://example.invalid", { headers: { "x-paseo-opencode-session": "ses_test" } });
   assert.equal(seen.access, a.access);
   assert.equal(await prepareClaudeSession({ provider: "opencode", purpose: "interactive", agentId: "agent" }), undefined);
+});
+
+test("a rejected native token (401) is reported, never refreshed, and leaves auth byte-identical", async () => {
+  requests = [];
+  const text = JSON.stringify({ openai: claimed, anthropic: { type: "oauth", access: "untouched" } });
+  await writeFile(authPath, text);
+  const before = await readFile(storePath, "utf8");
+  usageServer(() => new Response("unauthorized", { status: 401 }));
+  const state = await accounts.getAccountState({ provider: "openai", refreshUsage: true }, {});
+  accountStateRpc.output.parse(state);
+  const [account] = state.accounts;
+  assert.equal(account.email, "native@example.invalid");
+  assert.equal(account.plan, "pro");
+  assert.match(account.usageError, /rejected the native sign-in \(401\)/);
+  assert.deepEqual(account.usage, []);
+  assert.equal(account.needsReauth, false);
+  assert.deepEqual(calls, [USAGE_URL]);
+  assert.equal(requests[0].method, "GET");
+  assert.equal(requests[0].body, undefined);
+  assert.equal(requests[0].headers["ChatGPT-Account-Id"], "acct-synthetic");
+  // Within the cache window a second refresh does not hit OpenAI again.
+  await accounts.getAccountState({ provider: "openai", refreshUsage: true }, {});
+  assert.equal(calls.length, 1);
+  assert.equal(await readFile(authPath, "utf8"), text);
+  assert.equal(await readFile(storePath, "utf8"), before);
+});
+
+test("an expired native token or an API key makes no usage request", async () => {
+  for (const login of [{ ...claimed, expires: 1 }, { type: "api", key: "synthetic-key" }]) {
+    resetNativeOpenAIUsageCache();
+    const text = JSON.stringify({ openai: login });
+    await writeFile(authPath, text);
+    const state = await accounts.getAccountState({ provider: "openai", refreshUsage: true }, {});
+    accountStateRpc.output.parse(state);
+    assert.equal(state.accounts.length, 1);
+    assert.match(state.accounts[0].usageError, login.type === "api" ? /API keys/ : /expired.*never refreshes/);
+    assert.equal(await readFile(authPath, "utf8"), text);
+  }
+  assert.deepEqual(calls, []);
+});
+
+test("no native login shows no OpenAI account and blocks native switch and force", async () => {
+  const state = await accounts.getAccountState({ provider: "openai", refreshUsage: true }, {});
+  assert.deepEqual(state.accounts, []);
+  assert.equal(state.nativeOpenAI.status, "native-login-required");
+  agents = [{ id: "agent", provider: "opencode", model: "anthropic/claude-sonnet-5", status: "idle" }];
+  await assert.rejects(accounts.switchAccount({ provider: "openai", agentId: "agent", accountId: NATIVE_OPENAI_ACCOUNT_ID }), /opencode auth login/);
+  assert.match((await force.planForce({ provider: "openai", accountId: NATIVE_OPENAI_ACCOUNT_ID })).blocker, /opencode auth login/);
+  await assert.rejects(force.startForce({ provider: "openai", accountId: NATIVE_OPENAI_ACCOUNT_ID }), /opencode auth login/);
+  assert.deepEqual(rpcCalls, []);
+  assert.deepEqual(calls, []);
+});
+
+test("native force plans only OpenCode conversations on Claude and changes no pins", async () => {
+  await writeFile(authPath, JSON.stringify({ openai: { ...claimed, expires: 1 } }));
+  agents = [
+    { id: "on-claude", provider: "opencode", model: "anthropic/claude-sonnet-5", status: "running", title: "Claude on OpenCode" },
+    { id: "on-openai", provider: "opencode", model: "openai/gpt-5", status: "idle", title: "Already OpenAI" },
+    { id: "claude-code", provider: "claude", model: "claude-opus-5-5", status: "idle", title: "Claude Code" },
+  ];
+  const before = await readFile(storePath, "utf8");
+  const plan = await force.planForce({ provider: "openai", accountId: NATIVE_OPENAI_ACCOUNT_ID });
+  assert.deepEqual(plan.agents.map((agent) => [agent.agentId, agent.running]), [["on-claude", true]]);
+  assert.equal(plan.assignments, 0);
+  assert.equal(plan.blocker, null);
+  assert.equal(plan.email, "native@example.invalid");
+  assert.equal(await readFile(storePath, "utf8"), before);
+});
+
+test("native switch refuses running and non-OpenCode conversations without touching the model", async () => {
+  await writeFile(authPath, JSON.stringify({ openai: native }));
+  agents = [
+    { id: "busy", provider: "opencode", model: "anthropic/claude-sonnet-5", status: "running" },
+    { id: "claude-code", provider: "claude", model: "claude-opus-5-5", status: "idle" },
+  ];
+  await assert.rejects(accounts.switchAccount({ provider: "openai", agentId: "busy", accountId: NATIVE_OPENAI_ACCOUNT_ID }), /current response/);
+  await assert.rejects(accounts.switchAccount({ provider: "openai", agentId: "claude-code", accountId: NATIVE_OPENAI_ACCOUNT_ID }), /Only OpenCode/);
+  assert.deepEqual(rpcCalls, []);
 });

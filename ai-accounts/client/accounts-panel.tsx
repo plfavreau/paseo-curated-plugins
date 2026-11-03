@@ -173,7 +173,7 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
   const openaiModels = useQuery({
     queryKey: ["ai-account-models", "openai"],
     queryFn: () => getModelCatalog({ provider: "openai" }),
-    enabled: false,
+    enabled: usesModelCatalog && harness.providers.includes("openai"),
     staleTime: 5 * 60_000,
   });
   const { running: forceRunning, visibleJob: forceJob, dismiss: dismissForceJob } = useForceJob();
@@ -234,13 +234,18 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
   const pendingAccountId = switcher.isPending ? switcher.variables?.accountId : undefined;
 
   const c = theme.colors;
+  const openaiModelLabel = openaiModels.data
+    ? (openaiModels.data.models.find((model) => model.id === openaiModels.data?.preferredModelId)?.label ?? openaiModels.data.preferredModelId ?? undefined)
+    : undefined;
 
   const renderAccount = (provider: AccountProvider, account: NonNullable<(typeof states)[AccountProvider]["data"]>["accounts"][number]) => {
     const brand = BRAND[provider];
     const state = states[provider].data;
+    // OpenAI has exactly one account, the native OpenCode login: always the default, never removed here.
+    const native = provider === "openai";
     const isCurrentProvider = currentProvider === provider;
     const isRecommended = account.id === state?.recommendedAccountId;
-    const isDefault = account.id === state?.preferredAccountId;
+    const isDefault = native || account.id === state?.preferredAccountId;
     const isActive = !allSessions && account.isAssigned && isCurrentProvider;
     // A Claude Code process keeps the login it started with, so a pin it never restarted on does nothing yet.
     const needsRestart = isActive && (agent?.provider ?? "").startsWith("claude") && state?.launchedAccountId !== account.id;
@@ -256,6 +261,7 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
         account={account}
         isDefault={isDefault}
         isRecommended={isRecommended}
+        native={native ? { modelLabel: openaiModelLabel } : undefined}
         busy={busy}
         onClose={close}
         onRemove={() => remover.mutate({ provider, accountId: account.id })}
@@ -300,6 +306,7 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
             ) : null}
             {needsRestart ? <Tag color={c.statusDanger}>Tap to restart on this account</Tag> : isActive ? <Tag color={c.foreground}>In use</Tag> : null}
             {isDefault ? <Tag color={c.foreground}>Default</Tag> : null}
+            {native ? <Tag color={c.foregroundMuted}>{account.plan ? `Native · ${account.plan}` : "Native"}</Tag> : null}
             {isRecommended ? <Tag color={c.foregroundMuted}>Recommended</Tag> : null}
             <Text numberOfLines={1} style={[ui.secondary, { flexShrink: 1 }]}>
               {account.usage.length === 0 ? "Usage unavailable" : ""}
@@ -342,7 +349,15 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
         accessibilityRole="button"
         accessibilityState={{ disabled: !canSwitch, selected: isActive }}
         accessibilityLabel={
-          needsRestart ? `Restart this conversation on ${account.email}` : isActive ? `${account.email} is active` : isTurnActive ? "Switching is locked while this conversation is responding" : `Switch this conversation to ${brand.name} with ${account.email}`
+          needsRestart
+            ? `Restart this conversation on ${account.email}`
+            : isActive
+              ? `${account.email} is active`
+              : isTurnActive
+                ? "Switching is locked while this conversation is responding"
+                : native
+                  ? `Switch this conversation to ${openaiModelLabel ?? brand.name} on the native OpenAI account`
+                  : `Switch this conversation to ${brand.name} with ${account.email}`
         }
         key={account.id}
         onPress={() => {
@@ -373,7 +388,7 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
         </View>
       )}
 
-      {isTurnActive && currentProvider !== "openai" ? (
+      {isTurnActive ? (
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <ActivityIndicator color={c.foregroundMuted} size="small" />
           <Text style={[ui.footnote, { paddingHorizontal: 0 }]}>Responding. Switching unlocks when this turn ends.</Text>
@@ -385,15 +400,8 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
       {allSessions ? <SessionsOverview theme={theme} layout={layout} locked={forceRunning} /> : null}
 
       {harness.providers.map((provider) => {
-        if (provider === "openai") return (
-          <View key={provider} style={{ gap: 8 }}>
-            <SectionHead theme={theme} title="OpenAI" leading={<ProviderLogo provider={provider} size={22} />} />
-            <Text style={ui.primary}>Native managed, single account</Text>
-            <Text style={ui.secondary}>{openaiState.data?.nativeOpenAI?.message ?? "Use native OpenCode login: opencode auth login, then choose OpenAI / ChatGPT."}</Text>
-            {openaiState.data?.nativeOpenAI && openaiState.data.nativeOpenAI.status !== "native-auth-present" ? <Text style={ui.danger}>Native login required or auth unreadable. Do not deploy an empty broker sentinel as a credential.</Text> : null}
-            <Text style={ui.footnote}>Old multiaccount records are preserved but inactive. Login, refresh and account selection belong to stock OpenCode.</Text>
-          </View>
-        );
+        const native = provider === "openai";
+        const nativeStatus = native ? openaiState.data?.nativeOpenAI?.status : undefined;
         const brand = BRAND[provider];
         const state = states[provider];
         const modelCatalog = modelCatalogs[provider];
@@ -472,7 +480,16 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
                 }, ${state.data.recovery.label} window.`}
               </Text>
             ) : null}
-<View style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 2 }}>
+            {native ? (
+              <Text style={[nativeStatus && nativeStatus !== "native-auth-present" ? ui.danger : ui.footnote, { paddingHorizontal: 2 }]}>
+                {nativeStatus === "native-auth-present"
+                  ? "One native OpenCode sign-in serves every OpenAI conversation. OpenCode owns its login and renewal; ai-accounts only reads usage."
+                  : nativeStatus === "unreadable"
+                    ? "OpenCode's auth file is unreadable. Fix it, then run opencode auth login in a terminal."
+                    : "Not signed in. Run opencode auth login in a terminal and choose OpenAI / ChatGPT."}
+              </Text>
+            ) : (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 2 }}>
               <Text style={[ui.footnote, { flex: 1, paddingHorizontal: 0 }]}>
                 {state.data?.preferredAccountId ? `New ${brand.name} conversations start on ${forcedEmail ?? "one account"}.` : ""}
               </Text>
@@ -491,6 +508,7 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
                 }}
               />
             </View>
+            )}
           </View>
         );
       })}

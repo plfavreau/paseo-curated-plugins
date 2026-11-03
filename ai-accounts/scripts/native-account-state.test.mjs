@@ -3,6 +3,7 @@ import { afterAll, beforeEach, mock, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { parse } from "jsonc-parser";
 
 const scratch = await mkdtemp(join(tmpdir(), "ai-accounts-native-"));
@@ -247,7 +248,7 @@ test("handover removes only matching plugin entries, with backup and JSONC comme
 
 test("missing, sentinel and unreadable auth preserve OpenAI shim/config while Claude synchronization continues", async () => {
   const shim = join(configDir, "plugins/ai-accounts-codex.ts");
-  const owned = `${marker}\nexport { default } from 'old-broker';\n`;
+  const owned = `${marker}\nexport { default } from ${JSON.stringify(new URL("../opencode-codex-plugin.ts", import.meta.url).href)};\n`;
   const path = join(configDir, "opencode.json");
   const plugins = ["other", "opencode-openai-codex-auth", "file:///x/ai-accounts/opencode-codex-plugin.ts", "@ex-machina/opencode-anthropic-auth"];
   const source = join(scratch, "claude-source");
@@ -265,6 +266,15 @@ test("missing, sentinel and unreadable auth preserve OpenAI shim/config while Cl
     assert.deepEqual(JSON.parse(await readFile(path, "utf8")).plugin, plugins);
     await syncOpenCodePlugins(async () => source);
     assert.equal(await readFile(shim, "utf8"), owned);
+    // Load the actual preserved shim as a newly launched stock OpenCode process would.
+    const { default: retainedEntry } = await import(pathToFileURL(shim).href);
+    const hooks = await retainedEntry({ directory: scratch, client: {} });
+    for (const name of ["chat.params", "chat.headers"]) {
+      await assert.rejects(() => hooks[name]({ model: { providerID: "openai" } }, {}), /handoff pending/);
+      const output = { headers: { keep: "unchanged" } };
+      await hooks[name]({ model: { providerID: "anthropic" } }, output);
+      assert.deepEqual(output, { headers: { keep: "unchanged" } });
+    }
     assert.deepEqual(JSON.parse(await readFile(path, "utf8")).plugin, plugins.slice(0, -1));
     assert.match(await readFile(join(configDir, "plugins/ai-accounts-anthropic.ts"), "utf8"), /opencode-plugin\.ts/);
     if (auth !== undefined) assert.equal(await readFile(authPath, "utf8"), auth);
@@ -286,6 +296,36 @@ test("live ownership probe invokes only the dedicated read-only RPC and rejects 
   rpcResult = { ownershipVersion: 2, status: "native-auth-present", message: "unknown version" };
   await assert.rejects(liveNativeOwnership);
   assert.equal(await readFile(storePath, "utf8"), before);
+  assert.deepEqual(calls, []);
+});
+
+test("retained shim blocks fresh OpenAI until explicit post-login synchronization removes references", async () => {
+  const shim = join(configDir, "plugins/ai-accounts-codex.ts");
+  const entry = new URL("../opencode-codex-plugin.ts", import.meta.url).href;
+  const owned = `${marker}\nexport { default } from ${JSON.stringify(entry)};\n`;
+  const config = join(configDir, "opencode.json");
+  await writeFile(authPath, JSON.stringify({ openai: sentinel }));
+  await writeFile(shim, owned);
+  await writeFile(config, JSON.stringify({ plugin: [entry, "keep"] }));
+  const beforeStore = await readFile(storePath, "utf8");
+  await syncOpenCodePlugins(async () => undefined);
+  const { default: retained } = await import(pathToFileURL(shim).href);
+  const hooks = await retained({});
+  await assert.rejects(() => hooks["chat.params"]({ model: { providerID: "openai" } }, {}), /handoff pending/);
+  await assert.rejects(() => hooks["chat.headers"]({ model: { providerID: "openai" } }, {}), /handoff pending/);
+  // Synthetic native login does not by itself remove any references.
+  const nativeText = JSON.stringify({ openai: native });
+  await writeFile(authPath, nativeText);
+  await nativeOpenAIStatus();
+  assert.equal(await readFile(shim, "utf8"), owned);
+  assert.deepEqual(JSON.parse(await readFile(config, "utf8")).plugin, [entry, "keep"]);
+  await syncOpenCodePlugins(async () => undefined);
+  await assert.rejects(readFile(shim), { code: "ENOENT" });
+  assert.deepEqual(JSON.parse(await readFile(config, "utf8")).plugin, ["keep"]);
+  assert.equal(await readFile(authPath, "utf8"), nativeText);
+  assert.equal(await readFile(storePath, "utf8"), beforeStore);
+  // An already loaded process is still guarded; cleanup does not mutate its hooks in memory.
+  await assert.rejects(() => hooks["chat.params"]({ model: { providerID: "openai" } }, {}), /handoff pending/);
   assert.deepEqual(calls, []);
 });
 
@@ -332,9 +372,17 @@ test("scoped JSONC cleanup removes first, middle, final and duplicate entries wi
   assert.match(cleaned, /keep comment/);
 });
 
-test("retired manual entry is empty on stock OpenCode, no interception or capability requirement", async () => {
+test("retained Codex entry initializes on stock OpenCode but blocks only OpenAI inference", async () => {
   const { default: retired } = await import("../opencode-codex-plugin.ts");
-  assert.deepEqual(await retired({}), {});
+  const hooks = await retired({});
+  assert.deepEqual(Object.keys(hooks).sort(), ["chat.headers", "chat.params"]);
+  for (const name of ["chat.params", "chat.headers"]) {
+    const output = { headers: { keep: "unchanged" }, temperature: 0.3 };
+    await assert.rejects(() => hooks[name]({ model: { providerID: "openai" } }, output), /handoff pending.*reload the ai-accounts/);
+    assert.deepEqual(output, { headers: { keep: "unchanged" }, temperature: 0.3 });
+    for (const providerID of ["anthropic", "openrouter", "other"]) await hooks[name]({ model: { providerID } }, output);
+    assert.deepEqual(output, { headers: { keep: "unchanged" }, temperature: 0.3 });
+  }
   assert.deepEqual(calls, []);
 });
 

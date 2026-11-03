@@ -22,8 +22,16 @@ globalThis.fetch = (input, init) => {
 let backend;
 try {
   const { default: retired } = await import("../opencode-codex-plugin.ts");
-  // The old manual entry must be safe on a completely stock PluginInput, without capabilities.
-  assert.deepEqual(await retired({ directory: scratch, client: {} }), {});
+  // Retained references fail closed on stock OpenCode without requiring patched capabilities.
+  const retained = await retired({ directory: scratch, client: {} });
+  assert.deepEqual(Object.keys(retained).sort(), ["chat.headers", "chat.params"]);
+  for (const name of ["chat.params", "chat.headers"]) {
+    await assert.rejects(() => retained[name]({ model: { providerID: "openai" } }, {}), /handoff pending/);
+    const output = { headers: { native: "preserved" } };
+    await retained[name]({ model: { providerID: "anthropic" } }, output);
+    assert.deepEqual(output, { headers: { native: "preserved" } });
+  }
+  // After paused cleanup removes those references, native OpenAI loads without the guard.
   const { CodexAuthPlugin } = await import(pathToFileURL(join(source, "packages/opencode/src/plugin/openai/codex.ts")).href);
   const records = [];
   let sockets = 0;
@@ -131,7 +139,7 @@ try {
   const models = { fixture: {} };
   assert.equal(await api.provider.models({ models }, { auth }), models);
   assert.equal(refreshes, 1);
-  console.log("Stock v1.18.26 native integration passed: no middleware or broker hooks, native login/models, unchanged instructions/tools over HTTP and WebSocket, single-account pool reuse, title/failure HTTP fallback, and native-only refresh/writeback. Synthetic loopback data only.");
+  console.log("Stock v1.18.26 native integration passed: retained legacy entry blocks only OpenAI inference; after cleanup native loads without it or middleware. Native login/models, unchanged HTTP/WebSocket instructions/tools, pool reuse, HTTP fallback and native-only refresh/writeback verified. Synthetic loopback data only.");
 } finally {
   for (const native of instances) await native.dispose?.();
   await backend?.stop(true);

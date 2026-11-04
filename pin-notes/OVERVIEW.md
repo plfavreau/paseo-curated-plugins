@@ -12,7 +12,9 @@ When the description contains a URL, the daemon fetches that page once to fill i
 
 Agents see the pins of their own conversation and manage them with three tools: `pins_list`, `pin_set` (create a pin, or update one by id) and `pin_remove`. They pin what you will want one click away (the ticket, PRs they open or review, preview URLs they start), update a pin when its target moves, and remove the pins they created once stale. They ask before removing a pin you created. An agent cannot read or change another conversation's pins.
 
-Pins an agent adds appear within a few seconds, even mid-turn. Turn the plugin off and agents lose the tools at their next prompt.
+New agents get a short rule in their system prompt, so they pin without being asked. Pins an agent adds appear within a few seconds, even mid-turn. Turn the plugin off and agents lose the tools at their next prompt.
+
+OpenCode agents don't get the tools yet: OpenCode agents share one `opencode serve` process, which registers Paseo's tools once rather than per agent.
 
 ## Where pins are stored
 

@@ -12,6 +12,9 @@ const PIN_GUIDANCE = [
   "- Remove the pins you created once they are stale. Ask before removing a pin the user created.",
 ].join("\n");
 
+// A shared `opencode serve` registers Paseo's MCP server once, so OpenCode agents never get per-agent tools.
+const SKIPPED_PROVIDERS = new Set(["opencode"]);
+
 export default function contribute(server: PluginServerContext) {
   const pins = createPinService();
   const tools = createPinTools(pins);
@@ -19,16 +22,19 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listPinsRpc, async () => ({ pins: await pins.list() }));
   server.handle(savePinRpc, (input) => pins.create({ ...input, createdBy: "user" }));
   server.handle(removePinRpc, async ({ id }) => ({ removed: await pins.remove(id) }));
-  server.addHook("agent.create.before", async ({ request }) => ({
-    ...request,
-    config: {
-      ...request.config,
-      systemPrompt: [request.config.systemPrompt, PIN_GUIDANCE].filter(Boolean).join("\n\n"),
-    },
-  }));
-  server.addHook("agent.open.before", async ({ request }) => ({
-    ...request,
-    tools: [...request.tools, ...tools],
-  }));
+  server.addHook("agent.create.before", async ({ request }) => {
+    if (SKIPPED_PROVIDERS.has(request.config.provider)) return;
+    return {
+      ...request,
+      config: {
+        ...request.config,
+        systemPrompt: [request.config.systemPrompt, PIN_GUIDANCE].filter(Boolean).join("\n\n"),
+      },
+    };
+  });
+  server.addHook("agent.open.before", async ({ request }) => {
+    if (SKIPPED_PROVIDERS.has(request.provider)) return;
+    return { ...request, tools: [...request.tools, ...tools] };
+  });
   return () => {};
 }

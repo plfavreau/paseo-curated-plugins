@@ -70,7 +70,9 @@ Pin a note or a link to a conversation. Open the Command Center (Ctrl+K, ⌘K on
 
 Each pin is a pill above the composer. A link pill opens the page and shows its favicon; a note pill opens a popover with the text. When the description holds a URL, the daemon fetches the page once to fill in the title and favicon (a title you type wins).
 
-Pins are stored on the daemon machine in `~/.paseo/plugin-data/pin-notes/pins.json`. Requires Paseo 0.13 or newer.
+Agents get three tools for their own conversation's pins: `pins_list`, `pin_set` (create, or update by id) and `pin_remove`. They pin the ticket, PRs and preview URLs they work with, keep them current and remove the ones they created once stale; they ask before removing yours. Pins an agent adds show up within a few seconds, while it is still working.
+
+Pins are stored on the daemon machine in `~/.paseo/plugin-data/pin-notes/pins.json`. Requires Paseo 0.14 or newer.
 
 ## ai-accounts
 

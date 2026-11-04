@@ -8,6 +8,12 @@ Each pin becomes a pill above the composer, labeled with its title. A link pill 
 
 When the description contains a URL, the daemon fetches that page once to fill in the title (`og:title`, else `<title>`) and the favicon. A title you type yourself always wins, and a page that can't be reached still pins, using its hostname as the title.
 
+## Agents
+
+Agents see the pins of their own conversation and manage them with three tools: `pins_list`, `pin_set` (create a pin, or update one by id) and `pin_remove`. They pin what you will want one click away (the ticket, PRs they open or review, preview URLs they start), update a pin when its target moves, and remove the pins they created once stale. They ask before removing a pin you created. An agent cannot read or change another conversation's pins.
+
+Pins an agent adds appear within a few seconds, even mid-turn. Turn the plugin off and agents lose the tools at their next prompt.
+
 ## Where pins are stored
 
 On the daemon machine, in `~/.paseo/plugin-data/pin-notes/pins.json`. Pins belong to one conversation and nothing is sent anywhere except the page fetch above.

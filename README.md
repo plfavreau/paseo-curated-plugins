@@ -72,7 +72,7 @@ Each pin is a pill above the composer. A link pill opens the page and shows its 
 
 Agents get three tools for their own conversation's pins: `pins_list`, `pin_set` (create, or update by id) and `pin_remove`. They pin the ticket, PRs and preview URLs they work with, keep them current and remove the ones they created once stale; they ask before removing yours. Pins an agent adds show up within a few seconds, while it is still working.
 
-Pins are stored on the daemon machine in `~/.paseo/plugin-data/pin-notes/pins.json`. Requires Paseo 0.14 or newer.
+Pins are stored on the daemon machine in `~/.paseo/plugin-data/pin-notes/pins.json`. Requires Paseo 0.15 or newer.
 
 ## ai-accounts
 

@@ -25,10 +25,7 @@ export function createPinTools(pins: PinService) {
     input: z.object({}),
     async execute(_input, { agent }) {
       const own = (await pins.list()).filter((pin) => pin.agentId === agent.id);
-      return {
-        text: own.length ? own.map(describe).join("\n") : "No pins in this conversation.",
-        structuredContent: { pins: own },
-      };
+      return { text: own.length ? own.map(describe).join("\n") : "No pins in this conversation." };
     },
   });
 
@@ -50,7 +47,7 @@ export function createPinTools(pins: PinService) {
       if (id) {
         if (!(await conversationPin(agent.id, id))) return missing(id);
         const pin = await pins.update(id, { body: body?.trim() || undefined, title });
-        return pin ? { text: `Updated ${describe(pin)}`, structuredContent: pin } : missing(id);
+        return pin ? { text: `Updated ${describe(pin)}` } : missing(id);
       }
       if (!body?.trim()) return { isError: true, text: "body is required to create a pin." };
       const pin = await pins.create({
@@ -59,7 +56,7 @@ export function createPinTools(pins: PinService) {
         body: body.trim(),
         createdBy: "agent",
       });
-      return { text: `Pinned ${describe(pin)}`, structuredContent: pin };
+      return { text: `Pinned ${describe(pin)}` };
     },
   });
 

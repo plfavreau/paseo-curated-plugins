@@ -16,7 +16,8 @@ function serialized<T>(task: () => Promise<T>): Promise<T> {
 
 export async function readPins(path: string): Promise<Pin[]> {
   try {
-    return JSON.parse(await readFile(path, "utf8")) as Pin[];
+    const stored = JSON.parse(await readFile(path, "utf8")) as Partial<Pin>[];
+    return stored.map((pin) => ({ ...pin, createdBy: pin.createdBy ?? "user" }) as Pin);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
@@ -43,5 +44,17 @@ export function removePin(path: string, id: string) {
     if (remaining.length === pins.length) return false;
     await writePins(path, remaining);
     return true;
+  });
+}
+
+export function updatePin(path: string, id: string, update: (pin: Pin) => Pin) {
+  return serialized(async () => {
+    const pins = await readPins(path);
+    const index = pins.findIndex((pin) => pin.id === id);
+    if (index === -1) return null;
+    const updated = update(pins[index]);
+    pins[index] = updated;
+    await writePins(path, pins);
+    return updated;
   });
 }

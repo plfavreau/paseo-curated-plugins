@@ -1,10 +1,18 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { listPins, removePin, savePin } from "./server/pins";
+import { createPinTools } from "./server/agent-tools";
+import { createPinService } from "./server/pins";
 import { listPinsRpc, removePinRpc, savePinRpc } from "./shared/pins";
 
 export default function contribute(server: PluginServerContext) {
-  server.handle(listPinsRpc, () => listPins());
-  server.handle(savePinRpc, (input) => savePin(input));
-  server.handle(removePinRpc, ({ id }) => removePin(id));
+  const pins = createPinService();
+  const tools = createPinTools(pins);
+
+  server.handle(listPinsRpc, async () => ({ pins: await pins.list() }));
+  server.handle(savePinRpc, (input) => pins.create({ ...input, createdBy: "user" }));
+  server.handle(removePinRpc, async ({ id }) => ({ removed: await pins.remove(id) }));
+  server.addHook("agent.open.before", async ({ request }) => ({
+    ...request,
+    tools: [...request.tools, ...tools],
+  }));
   return () => {};
 }

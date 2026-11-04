@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import type { Pin } from "../shared/pins.ts";
 import { addPin, readPins, removePin } from "./pins-store.ts";
@@ -14,6 +14,7 @@ function pin(id: string): Pin {
     body: "body",
     url: null,
     faviconUrl: null,
+    createdBy: "user",
     createdAt: "2026-10-28T00:00:00.000Z",
   };
 }
@@ -44,4 +45,13 @@ test("removing a pin keeps the others and reports unknown ids", async () => {
 
 test("a missing store reads as no pins", async () => {
   assert.deepEqual(await readPins(await storePath()), []);
+});
+
+test("pins saved before agent pins existed read as user pins", async () => {
+  const path = await storePath();
+  const { createdBy: _, ...legacy } = pin("a");
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, JSON.stringify([legacy]));
+
+  assert.equal((await readPins(path))[0]?.createdBy, "user");
 });

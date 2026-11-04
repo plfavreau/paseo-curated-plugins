@@ -9,9 +9,6 @@ import { getPins, openPinDialog, setPins, subscribePins } from "./client/pin-sto
 import { pinPillIcon } from "./client/pill-icon";
 import { listPinsRpc, type Pin } from "./shared/pins";
 
-// Agents pin through tools mid-turn, and the 0.15 plugin API cannot push those changes to clients.
-const AGENT_PIN_POLL_MS = 3_000;
-
 type PillEntry = { signature: string; registration: PluginButtonRegistration };
 
 export default function contribute(client: PluginClientContext) {
@@ -103,42 +100,22 @@ export default function contribute(client: PluginClientContext) {
     }
   }
 
-  let lastPinsJson = "";
-  function refreshPins() {
-    void client.rpc(listPinsRpc, {}).then(({ pins }) => {
-      const json = JSON.stringify(pins);
-      if (json === lastPinsJson) return;
-      lastPinsJson = json;
-      setPins(pins);
-    });
-  }
-
-  const runningAgents = new Set<string>();
-  function trackAgent(agent: { id: string; workspaceId?: string | null; status: string }) {
-    if (agent.workspaceId) agentWorkspaces.set(agent.id, agent.workspaceId);
-    if (agent.status === "running") runningAgents.add(agent.id);
-    else runningAgents.delete(agent.id);
-  }
-
   const unsubscribePins = subscribePins(renderPins);
   const unsubscribeAgents = client.paseo.agents.subscribe((update) => {
-    if (update.kind !== "upsert") return;
-    trackAgent(update.agent);
+    if (update.kind !== "upsert" || !update.agent.workspaceId) return;
+    agentWorkspaces.set(update.agent.id, update.agent.workspaceId);
     renderPins();
-    refreshPins();
   });
 
   void client.paseo.agents.list({ subscribe: {} }).then(({ entries }) => {
-    for (const { agent } of entries) trackAgent(agent);
+    for (const { agent } of entries) {
+      if (agent.workspaceId) agentWorkspaces.set(agent.id, agent.workspaceId);
+    }
     renderPins();
   });
-  refreshPins();
-  const poll = setInterval(() => {
-    if (runningAgents.size > 0) refreshPins();
-  }, AGENT_PIN_POLL_MS);
+  void client.rpc(listPinsRpc, {}).then(({ pins }) => setPins(pins));
 
   return () => {
-    clearInterval(poll);
     unsubscribePins();
     unsubscribeAgents();
     for (const entry of pills.values()) entry.registration.remove();

@@ -8,7 +8,6 @@ export const pinSchema = z.object({
   body: z.string(),
   url: z.string().nullable(),
   faviconUrl: z.string().nullable(),
-  createdBy: z.enum(["user", "agent"]).default("user"),
   createdAt: z.string(),
 });
 

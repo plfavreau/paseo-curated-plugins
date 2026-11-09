@@ -158,9 +158,40 @@ function createButton(): HTMLElement {
   return button;
 }
 
+// Paseo runs one instance per connected host in the same window; only the first may own the page,
+// otherwise each one quotes the selection on Q. When it stops, the next one takes over.
+interface Claim {
+  start: () => () => void;
+  stop: (() => void) | null;
+}
+const holder = globalThis as { __quoteSelectionRuntime?: { queue: Claim[]; owner: Claim | null } };
+
+function claimPage(start: () => () => void): () => void {
+  const runtime = (holder.__quoteSelectionRuntime ??= { queue: [], owner: null });
+  const promote = () => {
+    const next = runtime.queue[0];
+    if (runtime.owner || !next) return;
+    runtime.owner = next;
+    next.stop = next.start();
+  };
+  const claim: Claim = { start, stop: null };
+  runtime.queue.push(claim);
+  promote();
+  return () => {
+    runtime.queue = runtime.queue.filter((other) => other !== claim);
+    if (runtime.owner !== claim) return;
+    claim.stop?.();
+    runtime.owner = null;
+    promote();
+  };
+}
+
 export function installSelectionQuote(): () => void {
   if (Platform.OS !== "web") return () => {};
+  return claimPage(mountSelectionQuote);
+}
 
+function mountSelectionQuote(): () => void {
   const button = createButton();
   document.body.appendChild(button);
   let pending: Pending | null = null;

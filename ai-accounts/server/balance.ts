@@ -32,7 +32,8 @@ import {
   type Candidate,
   type Job,
 } from "./force-account";
-import { normalizeUsage } from "./recommendation";
+import { nativeOpenAIAccount } from "./native-openai";
+import { bindingWindow, normalizeUsage, toRecommendationAccount } from "./recommendation";
 
 const execFileAsync = promisify(execFile);
 const CONCURRENCY = 4;
@@ -140,7 +141,7 @@ function viewOf(account: StoredAccount, now: number): AccountView {
   if (account.needsReauth && account.expires <= now + 60_000) {
     return { account, pace: 0, usable: false, note: "Needs to sign in again" };
   }
-  const windows = normalizeUsage(account.provider, account.usage);
+  const windows = toRecommendationAccount(account).usage;
   let pace = Number.POSITIVE_INFINITY;
   let note: string | null = null;
   for (const window of windows) {
@@ -515,7 +516,10 @@ export async function getHealth(_input: RpcInput<typeof healthRpc>) {
   const level = red.length > 0 ? "red" : orange.length > 0 ? "orange" : "green";
   const headline =
     level === "green" ? "Balanced: nothing to move" : level === "orange" ? "Could be better" : "Rebalance now";
-  return { level, headline, reasons: [...red, ...orange].slice(0, 3), moves, guessed } as const;
+  const native = await nativeOpenAIAccount(false);
+  const nativeUsable = native !== null && !bindingWindow({ id: "native", provider: "openai", email: native.email, usage: normalizeUsage("openai", native.usage) });
+  const available = views.filter((view) => view.usable).length + (nativeUsable ? 1 : 0);
+  return { level, headline, reasons: [...red, ...orange].slice(0, 3), moves, guessed, available, total: views.length + (native ? 1 : 0) } as const;
 }
 
 export async function setSessionTier({ agentId, tier }: RpcInput<typeof setTierRpc>) {

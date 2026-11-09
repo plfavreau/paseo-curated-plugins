@@ -285,6 +285,9 @@ export const healthRpc = defineRpc({
     moves: z.number(),
     /** True when part of the verdict rests on title keywords because Balance has not judged those conversations yet. */
     guessed: z.boolean(),
+    /** Accounts of either provider that are signed in and below their limits, out of `total`. */
+    available: z.number(),
+    total: z.number(),
   }),
 });
 

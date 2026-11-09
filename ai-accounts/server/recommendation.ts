@@ -59,6 +59,15 @@ export function normalizeUsage(provider: AccountProvider, value: unknown): Usage
   return windows;
 }
 
+/** Banked limit resets from a Claude usage reading's `cedar_ember` block. */
+export function claudeResets(usage: unknown): { available: number; expiresAt: string | null } | null {
+  const block = (usage as { cedar_ember?: { grants?: unknown } } | null | undefined)?.cedar_ember;
+  if (!block || !Array.isArray(block.grants)) return null;
+  const grants = block.grants.filter((grant): grant is { resets_left: number; ends_at?: unknown } => typeof grant?.resets_left === "number" && grant.resets_left > 0);
+  const ends = grants.map((grant) => grant.ends_at).filter((end): end is string => typeof end === "string").sort();
+  return { available: grants.reduce((sum, grant) => sum + grant.resets_left, 0), expiresAt: ends[0] ?? null };
+}
+
 export function toRecommendationAccount(account: StoredAccount): RecommendationAccount {
   const usage = normalizeUsage(account.provider, account.usage);
   // The vendor's own refusal outranks a usage reading that has not caught up yet.

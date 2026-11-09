@@ -31,7 +31,7 @@ import {
 import { removeNamespace } from "./claude-keychain";
 import { syncOpenCodePluginsInBackground } from "./opencode-shims";
 import { PLUGIN_ID, daemonUrl, paseoCliPath } from "./environment";
-import { nextRecovery, normalizeUsage, recommendAccount, toRecommendationAccount } from "./recommendation";
+import { claudeResets, nextRecovery, normalizeUsage, recommendAccount, toRecommendationAccount } from "./recommendation";
 import { NATIVE_OPENAI_ACCOUNT_ID, nativeOpenAIAccount, nativeOpenAIStatus, requireManagedProvider } from "./native-openai";
 
 const SESSION_ID_TTL_MS = 15_000;
@@ -211,7 +211,7 @@ export async function getAccountState(
     usageFetchedAt: account.usageFetchedAt ?? null,
     usageError: account.usageError ?? null,
     needsReauth: Boolean(account.needsReauth),
-    resets: null,
+    resets: claudeResets(account.usage),
   }));
   return {
     accounts,

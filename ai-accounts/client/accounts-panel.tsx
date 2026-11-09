@@ -309,6 +309,7 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
             {isDefault ? <Tag color={c.foreground}>Default</Tag> : null}
             {native ? <Tag color={c.foregroundMuted}>{account.plan ? `Native · ${account.plan}` : "Native"}</Tag> : null}
             {isRecommended ? <Tag color={c.foregroundMuted}>Recommended</Tag> : null}
+            {account.resets && account.resets.available > 0 ? <Tag color={brand.accent}>{`↻ ${account.resets.available} reset${account.resets.available > 1 ? "s" : ""}`}</Tag> : null}
             <Text numberOfLines={1} style={[ui.secondary, { flexShrink: 1 }]}>
               {account.usage.length === 0 ? "Usage unavailable" : ""}
             </Text>

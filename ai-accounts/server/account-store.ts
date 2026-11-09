@@ -534,7 +534,8 @@ export async function refreshUsage(accountId: string): Promise<void> {
   });
   try {
     const response = await fetch(
-      "https://api.anthropic.com/api/oauth/usage",
+      // `cedar_ember` adds the banked limit resets, as Claude Code's /limit-reset reads them.
+      "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1",
       {
         headers:
           { ...anthropicHeaders(), Authorization: `Bearer ${account.access}` },

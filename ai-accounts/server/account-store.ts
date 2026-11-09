@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { hasNamespace, readClaudeCredentials, writeClaudeCredentials } from "./claude-keychain";
 import { DATA_DIR, OPENCODE_AUTH_PATH, claudeCodeUserAgent } from "./environment";
-import { nextRecovery, recommendAccount, toRecommendationAccount } from "./recommendation";
+import { bindingWindow, nextRecovery, recommendAccount, toRecommendationAccount } from "./recommendation";
 import { requireManagedProvider } from "./native-openai";
 
 const STORE_PATH = join(DATA_DIR, "accounts.json");
@@ -303,9 +303,9 @@ export function resolveAccount(store: Store, provider: AccountProvider, keys?: O
   const candidates = store.accounts.filter((account) => account.provider === provider);
   if (candidates.length <= 1) return candidates[0];
   const byId = (id: string | undefined) => candidates.find((account) => account.id === id);
-  // A forced account outranks the recommendation on purpose: the point is to override it.
+  // A forced account outranks the recommendation on purpose, until it is at its limit.
   const forced = byId(store.preferredAccountIds?.[provider]);
-  if (forced) return forced;
+  if (forced && !bindingWindow(toRecommendationAccount(forced))) return forced;
   const ranked = candidates.map(toRecommendationAccount);
   const healthy = byId(recommendAccount(ranked)?.id);
   if (healthy) return healthy;

@@ -131,7 +131,7 @@ function describeCliFailure(error: unknown): string {
   return (failure.stderr || failure.stdout || failure.message || String(error)).toString().trim().slice(0, 300);
 }
 
-/** Restarts the agent's underlying process so a Claude harness re-reads its per-account credentials. */
+/** Restarts the agent's process so a Claude harness re-reads its per-account credentials; OpenCode needs none, it resolves the account on every request. */
 export async function reloadAgent(agentId: string, attempts = 1): Promise<void> {
   let failure: Error | undefined;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -296,8 +296,7 @@ async function switchToNativeOpenAI(agentId: string, accountId: string) {
       modelChanged = true;
     }
     await daemon.close();
-    await reloadAgent(agentId);
-    return { activeAccountId: NATIVE_OPENAI_ACCOUNT_ID, modelId, reloaded: true };
+    return { activeAccountId: NATIVE_OPENAI_ACCOUNT_ID, modelId, reloaded: false };
   } catch (error) {
     try {
       if (daemon.isConnected) await daemon.close();
@@ -424,8 +423,8 @@ export async function switchAccount({ provider, agentId, accountId }: RpcInput<t
       modelChanged = true;
     }
     await daemon.close();
-    await reloadAgent(agentId);
-    return { activeAccountId: accountId, modelId, reloaded: true };
+    if (!multiProvider) await reloadAgent(agentId);
+    return { activeAccountId: accountId, modelId, reloaded: !multiProvider };
   } catch (error) {
     try {
       if (daemon.isConnected) await daemon.close();

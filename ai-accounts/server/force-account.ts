@@ -213,16 +213,9 @@ export async function moveAgent(job: Job, target: MoveTarget, candidate: Candida
       }
       // Crossing providers swaps the model too, so the conversation does not keep asking the old vendor.
       if (newModel) await daemon.setAgentModel(candidate.agentId, newModel);
-      // Only the Claude harness needs the restart: it bakes the account into the process environment.
-      // OpenCode re-reads the account on every request, so a stuck reload must not fail the switch.
-      let note: string | null = null;
-      try {
-        await reloadAgent(candidate.agentId, 2);
-      } catch (error) {
-        if (!candidate.provider.startsWith("opencode")) throw error;
-        note = `Reload failed (${message(error)}); ${target.email} applies from its next request`;
-      }
-      if (!wasRunning) return { outcome: "reassigned" as const, note };
+      // Only the Claude harness bakes the account into its process; OpenCode resolves it on every request.
+      if (!candidate.provider.startsWith("opencode")) await reloadAgent(candidate.agentId, 2);
+      if (!wasRunning) return "reassigned" as const;
       const prompt = resumePrompt(provider, candidate.fromEmail, target.email, newModel);
       try {
         await daemon.sendAgentMessage(candidate.agentId, prompt);
@@ -231,9 +224,9 @@ export async function moveAgent(job: Job, target: MoveTarget, candidate: Candida
         await new Promise((resolve) => setTimeout(resolve, 2_000));
         await daemon.sendAgentMessage(candidate.agentId, prompt);
       }
-      return { outcome: "resumed" as const, note };
+      return "resumed" as const;
     });
-    job.results.push({ agentId: candidate.agentId, title: candidate.title, outcome: result.outcome, detail: result.note });
+    job.results.push({ agentId: candidate.agentId, title: candidate.title, outcome: result, detail: null });
   } catch (error) {
     job.results.push({ agentId: candidate.agentId, title: candidate.title, outcome: "failed", detail: message(error) });
   } finally {

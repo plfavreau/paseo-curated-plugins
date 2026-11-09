@@ -49,6 +49,10 @@ const BALANCE_TOLERANCE = 0.3;
 const MIN_IMPROVEMENT = 0.05;
 /** Interrupting a running conversation costs a little more than quietly re-pinning an idle one. */
 const RUNNING_MOVE_PENALTY = 0.1;
+/** The prompt cache belongs to one account, so moving a conversation whose cache is warm rewrites its whole context. */
+const REWRITE_PENALTY_PER_100K_TOKENS = 0.25;
+/** Longest Anthropic cache lifetime we use; past it the next turn is a full miss on any account. */
+const CACHE_TTL_MS = 60 * 60_000;
 const MIN_WINDOW_HOURS = 0.5;
 
 type LiveAgent = Awaited<ReturnType<ReturnType<typeof createDaemonClient>["fetchAgents"]>>["entries"][number]["agent"];
@@ -72,6 +76,8 @@ interface Session {
   tierReason: string | null;
   canUse: AccountProvider[];
   load: number;
+  /** Context tokens a move would write again into the new account's cache; 0 once the cache has expired. */
+  rewriteTokens: number;
   workspace: string | null;
   workspaceId: string | null;
   updatedAt: string | null;
@@ -111,6 +117,16 @@ function loadOf(agent: LiveAgent, now: number): number {
   if (agent.status === "running" || agent.status === "initializing") return LOAD_RUNNING;
   const touched = Date.parse(agent.updatedAt ?? "");
   return Number.isFinite(touched) && now - touched < RECENT_MS ? LOAD_RECENT : LOAD_DORMANT;
+}
+
+function rewriteTokensOf(agent: LiveAgent, now: number): number {
+  const touched = Date.parse(agent.updatedAt ?? "");
+  const warm = agent.status === "running" || agent.status === "initializing" || (Number.isFinite(touched) && now - touched < CACHE_TTL_MS);
+  return warm ? (agent.lastUsage?.contextWindowUsedTokens ?? 0) : 0;
+}
+
+function rewritePenalty(session: Session): number {
+  return (session.rewriteTokens / 100_000) * REWRITE_PENALTY_PER_100K_TOKENS;
 }
 
 function duration(ms: number): string {
@@ -181,6 +197,7 @@ function buildSession(agent: LiveAgent, store: Store, now: number): Session | nu
     tierReason: judged.reason,
     canUse: ["anthropic"],
     load: loadOf(agent, now),
+    rewriteTokens: rewriteTokensOf(agent, now),
     workspace: agent.cwd ? basename(agent.cwd) : null,
     workspaceId: agent.workspaceId ?? null,
     updatedAt: agent.updatedAt ?? null,
@@ -296,7 +313,7 @@ interface PlacementResult {
  *    left holding unused quota when its window resets.
  * 3. Starting from where conversations already are, the fewest moves that close the gap are chosen.
  */
-function placeSessions(sessions: Session[], views: AccountView[], housekeepingToCodex: boolean): PlacementResult {
+export function placeSessions(sessions: Session[], views: AccountView[], housekeepingToCodex: boolean): PlacementResult {
   const notes: string[] = [];
   const usable = (provider: AccountProvider) => views.filter((view) => view.account.provider === provider && view.usable);
   const placement = new Map<string, string>();
@@ -361,8 +378,9 @@ function placeSessions(sessions: Session[], views: AccountView[], housekeepingTo
         for (const session of members) {
           if (at(session) !== source.account.id) continue;
           const after = Math.abs(dev(source.account.id) - session.load) + Math.abs(dev(destination.account.id) + session.load);
-          if (after > before - MIN_IMPROVEMENT) continue;
-          const cost = after + (session.running ? RUNNING_MOVE_PENALTY : 0);
+          const penalty = rewritePenalty(session);
+          if (after + penalty > before - MIN_IMPROVEMENT) continue;
+          const cost = after + penalty + (session.running ? RUNNING_MOVE_PENALTY : 0);
           if (!best || cost < best.cost) best = { session, cost };
         }
         if (!best) continue;
@@ -411,6 +429,7 @@ export async function planBalance(input: RpcInput<typeof balancePlanRpc>) {
         toProvider: to.provider,
         crossProvider,
         reason,
+        rewriteTokens: session.rewriteTokens,
       },
     ];
   });

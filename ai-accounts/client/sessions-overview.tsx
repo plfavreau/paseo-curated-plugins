@@ -15,6 +15,7 @@ export const SESSIONS_KEY = ["ai-accounts", "sessions"] as const;
 const SHORT_NAME: Record<AccountProvider, string> = { anthropic: "Claude", openai: "Codex" };
 const localPart = (email: string) => email.split("@", 1)[0];
 const accountLabel = (provider: AccountProvider, email: string) => `${SHORT_NAME[provider]} ${localPart(email)}`;
+const rewriteLabel = (tokens: number) => (tokens > 0 ? `≈ ${Math.max(1, Math.round(tokens / 1000))}k tokens rewritten` : "free, cache already cold");
 /** The workspace name Paseo shows in its sidebar; the agent title only breaks ties inside a shared workspace. */
 const nameOf = (session: { workspaceTitle: string | null; workspaceSessions: number; title: string }) => {
   if (!session.workspaceTitle) return session.title;
@@ -105,6 +106,7 @@ export function SessionsOverview({ theme, locked }: { theme: Theme; layout: Plug
               <>
                 <Text style={{ textDecorationLine: included ? "line-through" : "none" }}>{accountLabel(provider, session.email ?? "?")}</Text>
                 <Text style={{ color: included ? BRAND[move.toProvider].accent : c.foregroundMuted }}>{`  →  ${accountLabel(move.toProvider, move.toEmail)}`}</Text>
+                <Text>{`  ·  ${rewriteLabel(move.rewriteTokens)}`}</Text>
               </>
             ) : (
               <Text style={{ color: BRAND[provider].accent }}>{accountLabel(provider, session.email ?? "?")}</Text>
@@ -165,6 +167,11 @@ export function SessionsOverview({ theme, locked }: { theme: Theme; layout: Plug
                   {note}
                 </Text>
               ))}
+              {chosen.length > 0 ? (
+                <Text style={ui.secondary}>
+                  {`Cache cost: ${rewriteLabel(chosen.reduce((sum, move) => sum + move.rewriteTokens, 0))}. Each account has its own prompt cache, so a conversation used in the last hour writes its whole context again.`}
+                </Text>
+              ) : null}
               {plan.moves.length > 0 ? <Text style={ui.secondary}>Tap a conversation below to leave it out. Tap its tag to change its kind.</Text> : null}
               {plan.busy ? <Text style={ui.danger}>Another switch is already running.</Text> : null}
             </View>

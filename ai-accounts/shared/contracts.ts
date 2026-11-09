@@ -225,6 +225,7 @@ const moveSchema = z.object({
   toProvider: providerSchema,
   crossProvider: z.boolean(),
   reason: z.string(),
+  rewriteTokens: z.number(),
 });
 
 export const balancePlanRpc = defineRpc({

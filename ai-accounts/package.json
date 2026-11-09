@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "bun test scripts/native-account-state.test.mjs",
+    "test": "bun test scripts/native-account-state.test.mjs && bun test scripts/balance-placement.test.mjs",
     "test:native": "bun scripts/verify-native-adapter.mjs"
   },
   "devDependencies": {

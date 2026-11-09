@@ -1,8 +1,8 @@
 import type { PluginCleanup } from "@getpaseo/plugin";
 import type { PluginButton, PluginButtonIconProps, PluginButtonRegistration, PluginClientContext, PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
-import { Text, View } from "react-native";
-import { HealthPill, useHealth } from "./client/health-pill";
+import { View } from "react-native";
+import { SidebarStatus, useHealth } from "./client/health-pill";
 import { AccountsPanel, AccountsPopover, AccountsScreen, countdown, subscribeAccountSwitches } from "./client/accounts-panel";
 import { type AccountProvider, harnessFor } from "./client/harness";
 import { SwitchNoteView } from "./client/auto-switch";
@@ -38,19 +38,7 @@ function SettingsSidebarItem({ currentScreen, openScreen, theme }: PluginSidebar
       icon="UsersRound"
       active={currentScreen?.screenId === "settings"}
       onPress={() => openScreen({ screenId: "settings" })}
-      trailing={
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          {health.data ? (
-            <Text
-              accessibilityLabel={`${health.data.available} of ${health.data.total} accounts available`}
-              style={{ color: health.data.available === 0 ? theme.colors.statusDanger : theme.colors.foregroundMuted, fontSize: 12, fontVariant: ["tabular-nums"] }}
-            >
-              {`${health.data.available}/${health.data.total}`}
-            </Text>
-          ) : null}
-          <HealthPill theme={theme} level={health.data?.level} compact />
-        </View>
-      }
+      trailing={<SidebarStatus theme={theme} health={health.data} />}
     />
   );
 }

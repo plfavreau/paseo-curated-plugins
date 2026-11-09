@@ -518,8 +518,18 @@ export async function getHealth(_input: RpcInput<typeof healthRpc>) {
     level === "green" ? "Balanced: nothing to move" : level === "orange" ? "Could be better" : "Rebalance now";
   const native = await nativeOpenAIAccount(false);
   const nativeUsable = native !== null && !bindingWindow({ id: "native", provider: "openai", email: native.email, usage: normalizeUsage("openai", native.usage) });
-  const available = views.filter((view) => view.usable).length + (nativeUsable ? 1 : 0);
-  return { level, headline, reasons: [...red, ...orange].slice(0, 3), moves, guessed, available, total: views.length + (native ? 1 : 0) } as const;
+  const now = Date.now();
+  const signedOut = views.filter((view) => view.account.needsReauth && view.account.expires <= now + 60_000).length + (native ? 0 : 1);
+  return {
+    level,
+    headline,
+    reasons: [...red, ...orange].slice(0, 3),
+    moves,
+    guessed,
+    usable: views.filter((view) => view.usable).length + (nativeUsable ? 1 : 0),
+    signedIn: views.length + 1 - signedOut,
+    total: views.length + 1,
+  } as const;
 }
 
 export async function setSessionTier({ agentId, tier }: RpcInput<typeof setTierRpc>) {

@@ -285,8 +285,10 @@ export const healthRpc = defineRpc({
     moves: z.number(),
     /** True when part of the verdict rests on title keywords because Balance has not judged those conversations yet. */
     guessed: z.boolean(),
-    /** Accounts of either provider that are signed in and below their limits, out of `total`. */
-    available: z.number(),
+    /** Accounts of either provider, the native OpenAI sign-in included, that can take a request now. */
+    usable: z.number(),
+    /** Accounts whose sign-in works, at their limit or not. */
+    signedIn: z.number(),
     total: z.number(),
   }),
 });

@@ -14,7 +14,7 @@ import { getHealth, getSessions, planBalance, setSessionTier, startBalance } fro
 import { getForceStatus, planForce, startForce } from "./server/force-account";
 import { prepareClaudeSession } from "./server/claude-session";
 import { syncOpenCodePluginsInBackground } from "./server/opencode-shims";
-import { nativeOpenAIStatus } from "./server/native-openai";
+import { nativeOpenAIStatus, redeemNativeOpenAIReset } from "./server/native-openai";
 import {
   accountStateRpc,
   balancePlanRpc,
@@ -27,6 +27,7 @@ import {
   forceStatusRpc,
   modelCatalogRpc,
   nativeOwnershipRpc,
+  redeemResetRpc,
   removeAccountRpc,
   reopenLoginRpc,
   sessionsRpc,
@@ -55,6 +56,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(balanceStartRpc, startBalance);
   server.handle(setTierRpc, setSessionTier);
   server.handle(healthRpc, getHealth);
+  server.handle(redeemResetRpc, redeemNativeOpenAIReset);
   syncOpenCodePluginsInBackground();
   const unsubscribe = server.before("agent.session_open", ({ request }) => prepareClaudeSession(request));
   return unsubscribe;

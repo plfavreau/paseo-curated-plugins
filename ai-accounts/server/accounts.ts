@@ -211,6 +211,7 @@ export async function getAccountState(
     usageFetchedAt: account.usageFetchedAt ?? null,
     usageError: account.usageError ?? null,
     needsReauth: Boolean(account.needsReauth),
+    resets: null,
   }));
   return {
     accounts,
@@ -255,6 +256,7 @@ async function nativeOpenAIState(refresh: boolean) {
           usageFetchedAt: native.usageFetchedAt,
           usageError: native.usageError,
           needsReauth: false,
+          resets: native.resets,
         }]
       : [],
     nativeOpenAI,

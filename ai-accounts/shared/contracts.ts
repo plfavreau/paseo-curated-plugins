@@ -36,6 +36,8 @@ const accountSchema = z.object({
   usageFetchedAt: z.string().nullable(),
   usageError: z.string().nullable(),
   needsReauth: z.boolean(),
+  /** Banked full resets (OpenAI only); null when unknown or not applicable. */
+  resets: z.object({ available: z.number(), expiresAt: z.string().nullable() }).nullable(),
 });
 
 export const accountStateRpc = defineRpc({
@@ -82,6 +84,12 @@ export const switchAccountRpc = defineRpc({
   name: "ai-accounts.switch",
   input: z.object({ provider: providerSchema, agentId: z.string(), accountId: z.string() }),
   output: z.object({ activeAccountId: z.string(), modelId: z.string().nullable(), reloaded: z.boolean() }),
+});
+
+export const redeemResetRpc = defineRpc({
+  name: "ai-accounts.openai.reset.redeem",
+  input: z.object({}),
+  output: z.object({ outcome: z.enum(["reset", "nothing_to_reset", "no_credit", "already_redeemed"]), windowsReset: z.number() }),
 });
 
 export const setPreferredAccountRpc = defineRpc({

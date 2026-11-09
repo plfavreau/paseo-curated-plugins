@@ -2,7 +2,7 @@ import { useRpc } from "@getpaseo/plugin/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
-import { sessionsRpc, setPreferredAccountRpc } from "../shared/contracts";
+import { redeemResetRpc, sessionsRpc, setPreferredAccountRpc } from "../shared/contracts";
 import { BRAND, ProviderLogo } from "./brand";
 import { ForceConfirmCard } from "./force-controls";
 import type { AccountProvider } from "./harness";
@@ -11,7 +11,14 @@ import { SESSIONS_KEY } from "./sessions-overview";
 import { Button, Check, Chevron, CLICKABLE, Dot, Meter, TABULAR, type Theme, useUi } from "./ui";
 
 type Usage = { label: string; utilization: number; resetsAt?: string | null };
-export type SheetAccount = { id: string; email: string; usage: Usage[]; needsReauth?: boolean };
+export type SheetAccount = { id: string; email: string; usage: Usage[]; needsReauth?: boolean; resets?: { available: number; expiresAt: string | null } | null };
+
+const RESET_RESULT = {
+  reset: "Reset used: every usage window is refilled.",
+  nothing_to_reset: "Nothing to reset yet, so the reset was kept.",
+  no_credit: "No reset left on this account.",
+  already_redeemed: "This reset was already used.",
+} as const;
 
 const shortWindow = (label: string) => {
   const match = /^(\d+)-(hour|day|week|month)$/.exec(label);
@@ -87,6 +94,16 @@ export function AccountSheet({
   const setPreferred = useRpc(setPreferredAccountRpc);
   const [listOpen, setListOpen] = useState(false);
   const [forcing, setForcing] = useState(false);
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  const redeemReset = useRpc(redeemResetRpc);
+  const resetter = useMutation({
+    mutationFn: redeemReset,
+    onSuccess: () => {
+      setConfirmingReset(false);
+      void queryClient.invalidateQueries({ queryKey: ["ai-accounts"] });
+    },
+  });
+  const resets = account.resets;
   const sessions = useQuery({ queryKey: SESSIONS_KEY, queryFn: () => getSessions({}), staleTime: 5_000 });
   const preferrer = useMutation({
     mutationFn: setPreferred,
@@ -233,6 +250,29 @@ export function AccountSheet({
           onPress={() => setForcing(true)}
         />
       </View>
+
+      {native && resets && resets.available > 0 ? (
+        confirmingReset ? (
+          <View style={{ gap: 8 }}>
+            <Text style={ui.primary}>Use 1 of {resets.available} banked resets?</Text>
+            <Text style={ui.secondary}>It refills every OpenAI usage window right away and cannot be undone. OpenAI keeps it if nothing needs resetting.</Text>
+            <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
+              <Button theme={theme} kind="secondary" title="Keep it" disabled={resetter.isPending} onPress={() => setConfirmingReset(false)} />
+              <Button theme={theme} kind="primary" title={resetter.isPending ? "Using…" : "Use reset"} disabled={resetter.isPending} onPress={() => resetter.mutate({})} />
+            </View>
+          </View>
+        ) : (
+          <OptionRow
+            theme={theme}
+            title={`Use reset (${resets.available} left)`}
+            detail={`Refill every usage window now.${resetsAt(resets.expiresAt) ? ` Expires ${new Date(resets.expiresAt!).toLocaleDateString()}.` : ""}`}
+            disabled={busy}
+            onPress={() => setConfirmingReset(true)}
+          />
+        )
+      ) : null}
+      {resetter.data ? <Text style={resetter.data.outcome === "reset" ? ui.secondary : ui.danger}>{RESET_RESULT[resetter.data.outcome]}</Text> : null}
+      {resetter.error ? <Text style={ui.danger}>{resetter.error instanceof Error ? resetter.error.message : String(resetter.error)}</Text> : null}
 
       {preferrer.error ? <Text style={ui.danger}>{preferrer.error instanceof Error ? preferrer.error.message : String(preferrer.error)}</Text> : null}
 

@@ -8,6 +8,7 @@ Custom plugins for [Paseo](https://paseo.sh). Each directory is a standalone plu
 | [`system-health`](./system-health) | Sidebar pills for CPU, RAM and disk usage, with a Clean button that prompts a session of your choice. |
 | [`ai-accounts`](./ai-accounts) | Manage multiple Claude subscriptions; OpenAI uses one native OpenCode account. |
 | [`pin-notes`](./pin-notes) | Pin notes and links to a conversation, shown as pills above the composer with the page title and favicon. |
+| [`quote-selection`](./quote-selection) | Select text in a conversation and quote it into the prompt with one click or the Q key. |
 
 ## Install
 
@@ -132,3 +133,9 @@ CI pins Node 22.22.2 and Bun 1.3.14: `npm ci --include=dev`, `npm run typecheck`
 ## License
 
 MIT
+
+## quote-selection
+
+Select text in an agent's messages and a Quote button appears above it. Click it, or press Q while it is shown, and the selection is appended to that pane's prompt as a Markdown quote, with the prompt focused and the cursor after the quote. Desktop and browser clients only.
+
+Paseo 0.15.3 has no plugin API to write to the composer, so the plugin writes to the composer textarea directly. Switch to `useComposers().insertText` once it ships in a release.

@@ -1,0 +1,8 @@
+{
+  "id": "quote-selection",
+  "name": "Quote selection",
+  "description": "Select text in a conversation and quote it into the prompt with one click",
+  "requirements": {
+    "paseo": ">=0.15.3"
+  }
+}

@@ -20,6 +20,7 @@ import { type AccountProvider, type Harness, harnessFor } from "./harness";
 import { SessionsOverview } from "./sessions-overview";
 import { AccountSheet } from "./account-sheet";
 import { BRAND, ProviderLogo } from "./brand";
+import { AutoSwitchSettings } from "./auto-switch";
 import { Button, CLICKABLE, Dropdown, FloatingLayer, Group, MenuItem, MenuSearch, Meter, SectionHead, TABULAR, Tag, useUi } from "./ui";
 
 export { BRAND, ProviderLogo };
@@ -512,6 +513,8 @@ function AccountsView({ theme, layout, agent, variant = "panel", onCompleted }: 
           </View>
         );
       })}
+
+      {allSessions ? <AutoSwitchSettings theme={theme} dense={compact} /> : null}
 
       {login ? (
         <Group theme={theme} dense={compact}>

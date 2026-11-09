@@ -60,12 +60,12 @@ export function normalizeUsage(provider: AccountProvider, value: unknown): Usage
 }
 
 export function toRecommendationAccount(account: StoredAccount): RecommendationAccount {
-  return {
-    id: account.id,
-    provider: account.provider,
-    email: account.email,
-    usage: normalizeUsage(account.provider, account.usage),
-  };
+  const usage = normalizeUsage(account.provider, account.usage);
+  // The vendor's own refusal outranks a usage reading that has not caught up yet.
+  if (account.limitedUntil && Date.parse(account.limitedUntil) > Date.now()) {
+    usage.push({ label: "Limit reached", utilization: 100, resetsAt: account.limitedUntil, blocked: true });
+  }
+  return { id: account.id, provider: account.provider, email: account.email, usage };
 }
 
 function windowDuration(label: string): number | null {

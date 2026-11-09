@@ -5,7 +5,8 @@ import { View } from "react-native";
 import { HealthPill, useHealth } from "./client/health-pill";
 import { AccountsPanel, AccountsPopover, AccountsScreen, countdown, subscribeAccountSwitches } from "./client/accounts-panel";
 import { type AccountProvider, harnessFor } from "./client/harness";
-import { accountStateRpc, setPreferredAccountRpc, USABILITY_CEILING } from "./shared/contracts";
+import { SwitchNoteView } from "./client/auto-switch";
+import { accountStateRpc, setPreferredAccountRpc, SWITCH_NOTE_KIND, SWITCH_NOTE_VERSION, switchNoteSchema, USABILITY_CEILING } from "./shared/contracts";
 
 function providerName(provider: AccountProvider): string {
   return provider === "anthropic" ? "Claude" : "Codex";
@@ -58,6 +59,7 @@ export default function contribute(client: PluginClientContext) {
     Component: AccountsPanel,
   });
   client.addScreen({ id: "settings", title: "AI accounts", Component: AccountsScreen });
+  client.addTimelineRenderer({ kind: SWITCH_NOTE_KIND, version: SWITCH_NOTE_VERSION, schema: switchNoteSchema, Component: SwitchNoteView });
   client.addSidebarFooterItem({ id: "settings", title: "AI accounts", Component: SettingsSidebarItem });
   client.addCommandCenterItem({
     id: "open-provider-settings",

@@ -31,6 +31,26 @@ export interface StoredAccount {
   usageFetchedAt?: string;
   usageError?: string;
   needsReauth?: string;
+  /** The vendor refused this account for hitting its plan limit, until this time. */
+  limitedUntil?: string;
+}
+
+export interface AutoSwitchSettings {
+  /** Move a conversation to the best other account when its account hits its plan limit. */
+  onLimit: boolean;
+  /** After moving a Claude Code conversation, tell it to carry on with the interrupted task. */
+  continueAfter: boolean;
+}
+
+export const DEFAULT_AUTO_SWITCH: AutoSwitchSettings = { onLimit: true, continueAfter: true };
+
+export interface Failover {
+  owner: string;
+  fromAccountId: string;
+  toAccountId: string;
+  limitedUntil: string;
+  at: string;
+  announced?: boolean;
 }
 
 export interface Store {
@@ -48,6 +68,9 @@ export interface Store {
   openCodeHandovers?: Partial<Record<AccountProvider, { plugin: string; config: string; at: string }>>;
   /** User removed the final broker account; do not reimport its independent native login. */
   dismissedNativeProviders?: AccountProvider[];
+  autoSwitch?: AutoSwitchSettings;
+  /** Recent automatic moves, kept so the Paseo side can note them in each conversation. */
+  failovers?: Failover[];
 }
 
 export interface BalanceSettings {
@@ -303,6 +326,40 @@ export async function setPreferredAccount(provider: AccountProvider, accountId: 
 export async function setPreferredModel(provider: AccountProvider, modelId: string): Promise<void> {
   await withStore((store) => {
     (store.preferredModelIds ??= {})[provider] = modelId;
+  });
+}
+
+export async function getAutoSwitch(): Promise<AutoSwitchSettings> {
+  return { ...DEFAULT_AUTO_SWITCH, ...(await readStore()).autoSwitch };
+}
+
+export async function setAutoSwitch(changes: Partial<AutoSwitchSettings>): Promise<AutoSwitchSettings> {
+  return withStore((store) => (store.autoSwitch = { ...DEFAULT_AUTO_SWITCH, ...store.autoSwitch, ...changes }));
+}
+
+const MAX_FAILOVERS_KEPT = 100;
+
+/**
+ * Records that `limitedId` is refused until `limitedUntil`, then re-pins the owner chain from it to
+ * the best usable account. Returns that account, or undefined when auto-switch is off or none is left.
+ */
+export async function failOver(provider: AccountProvider, keys: OwnerKeys, limitedId: string, limitedUntil: string): Promise<StoredAccount | undefined> {
+  requireManagedProvider(provider);
+  return withStore((store) => {
+    const limited = store.accounts.find((account) => account.id === limitedId);
+    if (limited) limited.limitedUntil = limitedUntil;
+    if (!{ ...DEFAULT_AUTO_SWITCH, ...store.autoSwitch }.onLimit) return undefined;
+    const candidates = store.accounts.filter((account) => account.provider === provider && account.id !== limitedId && !account.needsReauth);
+    const best = recommendAccount(candidates.map(toRecommendationAccount));
+    const target = candidates.find((account) => account.id === best?.id);
+    if (!target) return undefined;
+    const chain = ownerChain(keys);
+    const pinnedToLimited = chain.filter((owner) => store.assignments[assignmentKey(provider, owner)] === limitedId || store.assignments[owner] === limitedId);
+    const owners = pinnedToLimited.length ? pinnedToLimited : chain.slice(0, 1);
+    const at = new Date().toISOString();
+    for (const owner of owners) store.assignments[assignmentKey(provider, owner)] = target.id;
+    store.failovers = [...(store.failovers ?? []), ...owners.map((owner) => ({ owner, fromAccountId: limitedId, toAccountId: target.id, limitedUntil, at }))].slice(-MAX_FAILOVERS_KEPT);
+    return target;
   });
 }
 

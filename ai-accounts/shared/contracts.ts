@@ -86,6 +86,17 @@ export const switchAccountRpc = defineRpc({
   output: z.object({ activeAccountId: z.string(), modelId: z.string().nullable(), reloaded: z.boolean() }),
 });
 
+export const SWITCH_NOTE_KIND = "account-switch";
+export const SWITCH_NOTE_VERSION = 1;
+export const switchNoteSchema = z.object({ from: z.string().nullable(), to: z.string(), liftsAt: z.string().nullable(), at: z.string() });
+export type SwitchNote = z.infer<typeof switchNoteSchema>;
+
+const autoSwitchSchema = z.object({ onLimit: z.boolean(), continueAfter: z.boolean() });
+
+export const autoSwitchGetRpc = defineRpc({ name: "ai-accounts.auto-switch.get", input: z.object({}), output: autoSwitchSchema });
+
+export const autoSwitchSetRpc = defineRpc({ name: "ai-accounts.auto-switch.set", input: autoSwitchSchema.partial(), output: autoSwitchSchema });
+
 export const redeemResetRpc = defineRpc({
   name: "ai-accounts.openai.reset.redeem",
   input: z.object({}),

@@ -1,0 +1,7 @@
+{
+  "id": "notion-card",
+  "name": "Notion card",
+  "requirements": {
+    "paseo": ">=0.16.0-beta.0"
+  }
+}

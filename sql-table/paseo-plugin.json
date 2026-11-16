@@ -1,0 +1,7 @@
+{
+  "id": "sql-table",
+  "name": "SQL table",
+  "requirements": {
+    "paseo": ">=0.16.0-beta.0"
+  }
+}

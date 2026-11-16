@@ -11,6 +11,7 @@ Custom plugins for [Paseo](https://paseo.sh). Each directory is a standalone plu
 | [`quote-selection`](./quote-selection) | Select text in a conversation and quote it into the prompt with one click or the Q key. |
 | [`pdf-preview`](./pdf-preview) | Renders page thumbnails for PDFs the agent reads or runs a command on, with a page-by-page viewer. |
 | [`pr-card`](./pr-card) | Turns `gh pr` commands into a live pull request card with CI checks, review state and a re-run button. |
+| [`sql-table`](./sql-table) | Shows database query output (psql, Supabase, sqlite…) as a table you can expand row by row and copy as CSV, Markdown or JSON. |
 
 ## Install
 
@@ -78,6 +79,12 @@ The card polls GitHub every 10 seconds while checks run, every minute while the 
 The PR is read from the URL `gh pr create` prints, a URL or number argument, and `-R owner/repo`. A bare number or branch is resolved with `gh pr view` in the command's working directory (`cd dir && gh pr ...` is followed).
 
 Requires the GitHub CLI (`gh`) on the daemon machine, logged in.
+
+## sql-table
+
+A shell command running `psql`, `pgcli`, `supabase db query`, `sqlite3`, `duckdb`, `mysql`, `clickhouse` or an `sb-query`/`sb-write` wrapper, or an MCP database tool such as Supabase `execute_sql`, becomes a table card. The header shows the query, the row count and the `--env` (red for prod). Results render as a grid with numbers right-aligned and NULLs marked; ten rows show first, tapping a row opens it as a column/value list, and each table copies as CSV, Markdown or JSON. Errors show the database message, and the raw output stays one tap away.
+
+Parses psql aligned output in the unicode and ASCII styles (multi-line cells and wide characters included), JSON row arrays and CSV. Several statements give several tables. At most 200 rows per result ride on the card. Client-only: it reads the command output and never queries anything itself.
 
 ## system-health
 

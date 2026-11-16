@@ -1,179 +1,62 @@
 # Paseo curated plugins
 
-Custom plugins for [Paseo](https://paseo.sh). Each directory is a standalone plugin.
-
-| Plugin | What it does |
-| --- | --- |
-| [`image-preview`](./image-preview) | Renders inline thumbnails for image files the agent reads, instead of a plain text row. |
-| [`system-health`](./system-health) | Sidebar pills for CPU, RAM and disk usage, with a Clean button that prompts a session of your choice. |
-| [`ai-accounts`](./ai-accounts) | Manage multiple Claude subscriptions; OpenAI uses one native OpenCode account. |
-| [`pin-notes`](./pin-notes) | Pin notes and links to a conversation, shown as pills above the composer with the page title and favicon. |
-| [`quote-selection`](./quote-selection) | Select text in a conversation and quote it into the prompt with one click or the Q key. |
-| [`pdf-preview`](./pdf-preview) | Renders page thumbnails for PDFs the agent reads or runs a command on, with a page-by-page viewer. |
-| [`pr-card`](./pr-card) | Turns `gh pr` commands into a live pull request card with CI checks, review state and a re-run button. |
-| [`sql-table`](./sql-table) | Shows database query output (psql, Supabase, sqlite…) as a table you can expand row by row and copy as CSV, Markdown or JSON. |
-| [`notion-card`](./notion-card) | Turns `ntn` commands on a Notion page into a live card with its status, properties and to-do progress. |
+Plugins for [Paseo](https://paseo.sh). They turn what an agent does into something you can see at a glance. Each directory is a standalone plugin; its `OVERVIEW.md` has the details.
 
 ## Install
 
-Plugins must be enabled once on the daemon. Add this to the top level of `~/.paseo/config.json`:
-
-```json
-{
-  "version": 1,
-  "pluginsEnabled": true
-}
-```
-
-Then apply it without restarting the daemon:
+Enable plugins once (`"pluginsEnabled": true` at the top level of `~/.paseo/config.json`, then `paseo reload`), then:
 
 ```bash
-paseo reload
+paseo plugin install "git:https://github.com/plfavreau/paseo-curated-plugins.git:<plugin>"
 ```
 
-Clone the repo and install the plugin you want:
+Reload the Paseo app to load the new client code. `paseo plugin update <plugin>` pulls later changes.
 
-```bash
-git clone https://github.com/plfavreau/paseo-curated-plugins.git
-cd paseo-curated-plugins/image-preview
-npm install
-paseo plugin install "$PWD"
-paseo plugin ls
-```
+## In the conversation
 
-`paseo plugin ls` should show status `running`. Restart the Paseo app to pick up the plugin, because the client bundle is only fetched on a fresh connect.
+### [`image-preview`](./image-preview)
+Images the agent reads show as thumbnails, with a full-size viewer and download. Needs `ffmpeg`.
 
-After editing a plugin's source, run `paseo plugin reload <id>`. Never restart the daemon for this, it would kill running agents.
+<img src="docs/screenshots/image-preview.png" width="560" alt="image-preview">
 
-## image-preview
+### [`pdf-preview`](./pdf-preview)
+PDFs the agent reads or runs a command on (`Read`, `pdftotext`…) show their first page, with a page-by-page viewer. Needs `poppler`.
 
-Any `Read` of a `.png`, `.jpg`, `.gif`, `.webp` and similar becomes a thumbnail in the timeline. Tap it to open a full size view with the file path and a download button. The viewer includes previous/next buttons to browse completed image reads in conversation order; on the web and desktop, the left/right arrow keys also navigate, and Escape closes the viewer. Repeated reads of the same file remain separate slides.
+<img src="docs/screenshots/pdf-preview.png" width="200" alt="pdf-preview">
 
-The daemon downscales to 1024px wide and sends a JPEG data URI, so large screenshots stay cheap over the wire.
+### [`pr-card`](./pr-card)
+`gh pr` commands become a live PR card: CI jobs as they run and fail, review and merge state, re-run failed jobs. Needs `gh`.
 
-Requires `ffmpeg` and `ffprobe` on the daemon machine.
+<img src="docs/screenshots/pr-card.png" width="680" alt="pr-card">
 
-### Download button
+### [`sql-table`](./sql-table)
+Query output (psql, Supabase, sqlite, MySQL…) shows as a table: tap a row to read it, copy as CSV, Markdown or JSON.
 
-Downloads need no setup. The daemon streams the original file to the app in 384 KB chunks over the connection you already have, and the app saves it. The file never leaves your daemon and your device, and nothing is uploaded anywhere.
+<img src="docs/screenshots/sql-table.png" width="680" alt="sql-table">
 
-The thumbnail is a downscaled JPEG, but the download is the untouched original file.
+### [`notion-card`](./notion-card)
+`ntn` commands on a Notion page become a live card: status, properties, to-do lists and their progress. Needs the [Notion CLI](https://ntn.dev).
 
-This works in the Paseo web app, which includes the mobile app. On a build with no browser file APIs the button says so instead of failing silently. Files above 64 MB are refused.
+<img src="docs/screenshots/notion-card.png" width="680" alt="notion-card">
 
-## pdf-preview
+### [`quote-selection`](./quote-selection)
+Select text in a message and press Q to quote it into the prompt.
 
-A `Read` of a `.pdf` (Claude Code, OpenCode), or a shell command naming one such as `pdftotext report.pdf -` (what Codex does), becomes a page thumbnail in the timeline. For shell commands the command stays visible above the thumbnail and its output expands on tap, so nothing is lost by replacing the row.
+## Around it
 
-Tap the thumbnail to page through the document; arrow keys turn pages and Escape closes it on the web and desktop. The viewer can open the full PDF in a browser tab, download it, or copy its path, using the same chunked transfer as `image-preview`.
+### [`system-health`](./system-health)
+CPU, RAM and disk pills in the sidebar, with a button that sends a cleanup prompt to a session you pick.
 
-Paths in shell commands are resolved against the command's working directory. Globs (`*.pdf`) and paths containing `$` are ignored, and a path that is not a real file shows a quiet "no preview" line.
+<img src="docs/screenshots/system-health.png" width="320" alt="system-health">
 
-Requires poppler (`pdfinfo`, `pdftoppm`) on the daemon machine.
+### [`ai-accounts`](./ai-accounts)
+Several Claude subscriptions, with usage per account and conversations spread across them. Setup and OpenAI handoff: [ai-accounts/README.md](./ai-accounts/README.md).
 
-## pr-card
+<img src="docs/screenshots/ai-accounts.png" width="320" alt="ai-accounts">
 
-A shell command running `gh pr create`, `view`, `checks`, `merge`, `edit` or similar becomes a live card for the pull request: state, title, branches, diff size, review decision, unresolved threads and merge status, then every CI check of the head commit with failing and running jobs first and live timers. Tap a check to open its logs; the footer opens the PR, copies its link, refreshes, and re-runs failed workflow jobs.
-
-The card polls GitHub every 10 seconds while checks run, every minute while the PR is open, and stops once it is merged or closed. Cards for the same PR share one request. After `gh pr create` the card opens expanded; for other commands it starts as a one-line summary, so an agent polling `gh pr checks` does not flood the timeline. The command stays visible above the card and its output expands on tap.
-
-The PR is read from the URL `gh pr create` prints, a URL or number argument, and `-R owner/repo`. A bare number or branch is resolved with `gh pr view` in the command's working directory (`cd dir && gh pr ...` is followed).
-
-Requires the GitHub CLI (`gh`) on the daemon machine, logged in.
-
-## sql-table
-
-A shell command running `psql`, `pgcli`, `supabase db query`, `sqlite3`, `duckdb`, `mysql`, `clickhouse` or an `sb-query`/`sb-write` wrapper, or an MCP database tool such as Supabase `execute_sql`, becomes a table card. The header shows the query, the row count and the `--env` (red for prod). Results render as a grid with numbers right-aligned and NULLs marked; ten rows show first, tapping a row opens it as a column/value list, and each table copies as CSV, Markdown or JSON. Errors show the database message, and the raw output stays one tap away.
-
-Parses psql aligned output in the unicode and ASCII styles (multi-line cells and wide characters included), JSON row arrays and CSV. Several statements give several tables. At most 200 rows per result ride on the card. Client-only: it reads the command output and never queries anything itself.
-
-## notion-card
-
-A shell command running the Notion CLI on a page (`ntn pages get`, `edit`, `create`, `trash`, or `ntn api` on `/v1/pages/<id>` and `/v1/blocks/<id>/children`) becomes a card for that page: icon, title, parent database, status and overall to-do progress. Expanded, it lists the main properties (people, selects, story points, sprint and other relations by title, dates) and every to-do list with a progress bar and its items, then opens the page in Notion or copies its link.
-
-When a write finishes, the card refetches the page, and every earlier card of the same page updates too, so a status change shows up in place. Expanded cards refresh every minute. The page id comes from the command (UUID, 32-hex id or notion.so URL); for creates it comes from the output, never from `--parent`. Up to three pages per command.
-
-Requires the `ntn` CLI on the daemon machine, logged in (looked up on PATH, then `~/.local/bin`).
-
-## system-health
-
-A sidebar row shows three pills for CPU, RAM and disk usage on the daemon machine: green below 80%, orange from 80% to 95%, red above 95%. They refresh every 15 seconds.
-
-Tap the row for a popover with the details and a **Clean** button. Clean sends a prompt with the current readings to the session you pick in "Send cleanup prompt to" (searchable, grouped and ordered like the sidebar), so an agent you keep open can run another cleanup round. The plugin never deletes anything itself. The prompt is editable under Settings → Plugins → System health; `{stats}` is replaced with the readings.
-
-On macOS, RAM uses `memory_pressure`, which ignores the file cache macOS counts as used.
-
-## pin-notes
-
-Pin a note or a link to a conversation. Open the Command Center (Ctrl+K, ⌘K on macOS) and run **Pin note** or **Manage pins**: one dialog to add a pin at the top and see, open or unpin your pins below.
-
-Each pin is a pill above the composer. A link pill opens the page and shows its favicon; a note pill opens a popover with the text. When the description holds a URL, the daemon fetches the page once to fill in the title and favicon (a title you type wins).
-
-Pins are stored on the daemon machine in `~/.paseo/plugin-data/pin-notes/pins.json`. Requires Paseo 0.13 or newer.
-
-## ai-accounts
-
-Sign in several Claude subscriptions and spread Claude conversations across them. Each Claude conversation gets a pill with its account and usage; click it to switch accounts. The accounts screen shows limits and a **Balance** button proposes Claude-only moves before anything changes.
-
-New Claude conversations start on the account furthest behind its usage pace. Mark one as **Default** to pin new Claude conversations to it instead. Claude Code keychain namespaces, session preparation and the OpenCode Anthropic auth wrapper are unchanged.
-
-### Requirements
-
-- Paseo 0.12 or later.
-- Stock upstream OpenCode for Claude and native OpenAI; Claude Code for Claude accounts.
-- macOS for Claude Code: each account's credentials live in their own Keychain entry.
-- `sqlite3` on `PATH` (shipped with macOS).
-
-The Codex CLI keeps its own login, so its conversations get no pill.
-
-### OpenCode setup
-
-Claude accounts install `ai-accounts-anthropic.ts` in OpenCode's global plugins directory and wrap [`@ex-machina/opencode-anthropic-auth`](https://www.npmjs.com/package/@ex-machina/opencode-anthropic-auth). Existing Claude login import and renewal behavior is preserved.
-
-OpenAI is **native managed, single account per teammate/host**. Use stock upstream OpenCode, with its native OpenAI login, model handling, prompts, tools, HTTP and WebSocket transport. No core patch or auth-loader middleware is required. Sign in using the native CLI on the daemon host:
-
-```sh
-opencode auth login
-```
-
-Choose OpenAI / ChatGPT, but first complete the legacy-process drain below. This plugin runtime does not offer OpenAI login, assignment, account deletion, default selection, usage polling, token refresh, auto-balance or LLM sorting. Old OpenAI records and metadata remain in `accounts.json`, inactive and never copied into native auth. An existing independent native OAuth or API-key login is left intact; the status check is structural and does not remotely validate credentials. Old OpenCode processes can still refresh broker tokens until fully retired, regardless of new files on disk.
-
-### Native OpenAI handoff
-
-Editing an installed directory is activation for **fresh OpenCode processes**, even without a Paseo plugin reload: a retained shim imports whatever source is now at its target. Pause launches **before** pulling, editing, installing or updating the plugin source. Already running processes keep their old broker code. Provisioning must coordinate these steps. Auth presence, plugin attestation and process retirement are separate conditions; none alone authorizes native inference:
-
-1. Pause new OpenCode launches **before any pull/source edit/plugin install or update**. Inspect the affected process/server inventory and obtain user permission before retiring anything. Let running turns finish, then fully retire the old OAuth-using OpenCode processes, **including idle servers**, before native login or inference. Changing source, replacing a launcher or loading a new Paseo plugin does not unload their broker. Do not infer retirement from a process timestamp, plugin source text or an idle agent. Do not restart Paseo or kill/restart processes automatically.
-2. After intentional deployment, query the **loaded** plugin from `ai-accounts` with `bun scripts/native-handoff.mjs --attest-only`. It calls the dedicated read-only RPC `invokePluginRpc("ai-accounts", "ai-accounts.native-ownership", {})` on the loopback daemon. An older plugin rejects the unknown method without invoking its old, potentially mutating state migration. Exit 0 means a valid versioned response with structurally present native auth only; this mode always prints `handoffReady: false`. Missing/unknown versions, missing/unreadable auth, unavailable RPC and non-local endpoints exit 2. Never substitute source-text inspection for this probe.
-3. Require `ownership.ownershipVersion === 1` and `ownership.status === "native-auth-present"`. Version 1 attests only that the responding plugin runtime no longer imports, refreshes or routes OpenAI broker credentials. It does **not** attest old-process retirement, binary selection, config cleanup or remote token validity. The existing state RPC `ai-accounts.state` with `{ "provider": "openai", "refreshUsage": false }` exposes the same object as `nativeOpenAI`, but do not probe an unknown old runtime through that RPC because old state handlers can migrate credentials.
-4. An absent/empty OAuth entry, invalid shape or reserved `ai-accounts-broker-bootstrap` sentinel is **not** usable auth. Require native login after the drain before declaring handoff ready. Do not restore stored broker tokens, even if one appears current. Unreadable auth requires operator inspection, not overwrite.
-5. After native login has completed and its process has exited, **while launches remain paused**, explicitly run `paseo plugin reload ai-accounts` to run post-login synchronization. Merely logging in or reading the readiness RPC does not trigger shim cleanup. Only when native auth is structurally present does synchronization remove a marker-owned `ai-accounts-codex.ts` shim and recognized OpenAI entries from global config. Missing/sentinel/unreadable auth leaves those OpenAI shim/config entries intact and logs pending login; Claude synchronization continues independently. It never creates an OpenAI shim. Unowned files remain for operator inspection. Wait for synchronization and inspect the actual shim/config files before the migration-readiness gate; live ownership attestation alone does not prove asynchronous cleanup finished.
-6. Recognized config entries are `opencode-openai-codex-auth` and manual `ai-accounts/opencode-codex-plugin.ts` paths in the top-level `plugin` array of `opencode.json` / `opencode.jsonc`. Removal creates a private `.bak-ai-accounts-*` backup and preserves unrelated settings/comments. Malformed or ambiguous configs and project-local overrides need manual review. Never restore a whole old config backup, which would reintroduce interception. Until references are removed, the compatibility entry initializes successfully but rejects **OpenAI inference only**, through `chat.params` and `chat.headers`, with a pending-handoff instruction. Anthropic is unchanged. It never loads broker auth, refreshes tokens or wraps native transport. Fresh processes loading a preserved shim therefore fail closed rather than silently activating native inference. A process that already loaded this guard keeps it: only launch a fresh native process after cleanup and readiness, without those references.
-7. After the operator has verified retirement, run `bun scripts/native-handoff.mjs --confirm-legacy-retired` on the daemon host. It still blocks on **any** recognizable local OpenCode process (conservatively including stock servers), failed process inspection, unavailable/old live plugin or missing native auth. Exit 0 requires all gates; exit 2 reports pending. It returns PIDs, never argv or tokens, and never stops anything. This flag confirms operator review, not permission to kill. Renamed, wrapped or remote processes sharing the credentials require explicit operator inspection beyond `ps`; the scan is point-in-time, not a launch lock. Keep launches paused through the handoff.
-8. Once all gates and config/launcher review pass, the umbrella's separate provisioning flow may launch stock OpenCode and verify a native request. Re-running the conservative drain gate after new servers start will block again by design. This repo neither provisions nor patches OpenCode. No safe overlap with old broker refresh ownership is claimed.
-
-The exact dedicated RPC response is `{ "ownershipVersion": 1, "status": "native-auth-present" | "native-login-required" | "unreadable", "message": "..." }`. The CLI's `--attest-only` wraps it as `{ "handoffReady": false, "ownership": <response>, "message": "..." }`; the full gate returns `{ "ready": boolean, "reason": "...", ... }`. Unknown versions and missing fields fail closed. These read-only commands never renew credentials or write configs.
-
-No migration code deletes or writes OpenAI auth, refreshes a broker credential, or imports native OpenAI credentials. The old sentinel is diagnosed, not silently repaired. Claude migration/renewal may still update Claude's auth as before.
-
-### Verification
-
-CI pins Node 22.22.2 and Bun 1.3.14: `npm ci --include=dev`, `npm run typecheck`, `npm test`. Regressions use temporary config/data and synthetic credentials, mock Claude keychain and Paseo access, and prove inactive OpenAI records survive, UI refresh makes no OpenAI requests, sentinel detection, scoped config cleanup and unchanged Claude routing/session preparation.
-
-`OPENCODE_SOURCE=/path/to/stock/opencode npm run test:native` exercises the actual unmodified upstream v1.18.26 native adapter at commit `774cc7c1914e4329eefde5a669f938b0cf566661`, after `bun install --frozen-lockfile` there. It verifies native login/model hooks, HTTP/WebSocket requests with unchanged instructions/tools, pool reuse, HTTP fallback and native refresh/writeback against a synthetic loopback server. It neither patches source nor composes an auth-loader middleware. It is an adapter integration fixture, not a live account or full CLI end-to-end test.
-
-
-### Good to know
-
-- Logins use the same public OAuth clients as Claude Code and the Codex CLI. Using a subscription outside the vendor's own tools may be against its terms; you decide.
-- Claude tokens are stored in `~/.local/share/ai-accounts/accounts.json` (mode 600) and, for Claude Code, in the macOS Keychain. Removing a Claude account deletes both. Legacy OpenAI records cannot be deleted through this UI.
-- Claude Code reads credentials from a per-account Keychain entry through an undocumented setting, so a Claude Code update could break switching there. `/status` inside Claude Code shows your own email for every account; the account in use is the one the pill shows.
+### [`pin-notes`](./pin-notes)
+Pin notes and links to a conversation, shown as pills above the composer.
 
 ## License
 
 MIT
-
-## quote-selection
-
-Select text in an agent's messages and a Quote button appears above it. Click it, or press Q while it is shown, and the selection is appended to that pane's prompt as a Markdown quote, with the prompt focused and the cursor after the quote. Desktop and browser clients only.
-
-Paseo 0.15.3 has no plugin API to write to the composer, so the plugin writes to the composer textarea directly. Switch to `useComposers().insertText` once it ships in a release.

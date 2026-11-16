@@ -9,6 +9,7 @@ Custom plugins for [Paseo](https://paseo.sh). Each directory is a standalone plu
 | [`ai-accounts`](./ai-accounts) | Manage multiple Claude subscriptions; OpenAI uses one native OpenCode account. |
 | [`pin-notes`](./pin-notes) | Pin notes and links to a conversation, shown as pills above the composer with the page title and favicon. |
 | [`quote-selection`](./quote-selection) | Select text in a conversation and quote it into the prompt with one click or the Q key. |
+| [`pdf-preview`](./pdf-preview) | Renders page thumbnails for PDFs the agent reads or runs a command on, with a page-by-page viewer. |
 
 ## Install
 
@@ -56,6 +57,16 @@ Downloads need no setup. The daemon streams the original file to the app in 384 
 The thumbnail is a downscaled JPEG, but the download is the untouched original file.
 
 This works in the Paseo web app, which includes the mobile app. On a build with no browser file APIs the button says so instead of failing silently. Files above 64 MB are refused.
+
+## pdf-preview
+
+A `Read` of a `.pdf` (Claude Code, OpenCode), or a shell command naming one such as `pdftotext report.pdf -` (what Codex does), becomes a page thumbnail in the timeline. For shell commands the command stays visible above the thumbnail and its output expands on tap, so nothing is lost by replacing the row.
+
+Tap the thumbnail to page through the document; arrow keys turn pages and Escape closes it on the web and desktop. The viewer can open the full PDF in a browser tab, download it, or copy its path, using the same chunked transfer as `image-preview`.
+
+Paths in shell commands are resolved against the command's working directory. Globs (`*.pdf`) and paths containing `$` are ignored, and a path that is not a real file shows a quiet "no preview" line.
+
+Requires poppler (`pdfinfo`, `pdftoppm`) on the daemon machine.
 
 ## system-health
 

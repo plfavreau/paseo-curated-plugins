@@ -1,0 +1,7 @@
+{
+  "id": "pdf-preview",
+  "name": "PDF preview",
+  "requirements": {
+    "paseo": ">=0.16.0-beta.0"
+  }
+}

@@ -153,6 +153,8 @@ const pageSchema = z.object({
   url: z.string(),
   title: z.string(),
   icon: z.string().nullable(),
+  /** A custom page icon (uploaded or linked image). */
+  iconUrl: z.string().nullable(),
   inTrash: z.boolean(),
   parent: z.string().nullable(),
   lastEditedAt: z.string().nullable(),

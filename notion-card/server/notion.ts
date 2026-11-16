@@ -26,8 +26,8 @@ const HIDDEN_TYPES = new Set([
   "last_edited_time",
   "verification",
 ]);
-/** Audit fields stored as ordinary properties on some boards ("Created by", "In this column since"). */
-const HIDDEN_NAMES = /^(created|last edited|in this column since)\b/i;
+/** Audit fields some boards store as ordinary properties ("Created by", "Created time"). */
+const HIDDEN_NAMES = /^(created|last edited)\b/i;
 const TYPE_ORDER = ["people", "select", "number", "relation", "multi_select", "date", "unique_id", "url", "checkbox"];
 
 type Json = Record<string, any>;
@@ -277,6 +277,12 @@ export async function loadPage({ pageId }: Input): Promise<Output> {
       url: String(page.url ?? `https://www.notion.so/${id.replace(/-/g, "")}`),
       title: pageTitle(page) || "Untitled",
       icon: page.icon?.type === "emoji" ? String(page.icon.emoji) : null,
+      iconUrl:
+        page.icon?.type === "external"
+          ? String(page.icon.external?.url ?? "") || null
+          : page.icon?.type === "file"
+            ? String(page.icon.file?.url ?? "") || null
+            : null,
       inTrash: Boolean(page.in_trash ?? page.archived),
       parent,
       lastEditedAt: typeof page.last_edited_time === "string" ? page.last_edited_time : null,

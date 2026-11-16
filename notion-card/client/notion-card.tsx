@@ -4,11 +4,12 @@ import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { Icon, copyText, useToast } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from "react-native";
-import type { NotionAction, NotionCardData, NotionChecklist, NotionPage } from "../shared/notion";
+import { ActivityIndicator, Image, Pressable, Text, View } from "react-native";
+import { notionLogo } from "./notion-logo";
+import { Action, Card, CommandLine, Divider, Dot, MONO, SegmentBar } from "./ui";
+import type { NotionAction, NotionCardData } from "../shared/notion";
 import { notionPageRpc } from "../shared/notion";
 
-const MONO = Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" });
 
 /** Notion's own tag colors, readable on light and dark surfaces. */
 const NOTION_COLORS: Record<string, string> = {
@@ -48,11 +49,6 @@ function ago(iso: string | null, now: number): string | null {
   return `${Math.floor(hours / 24)}d`;
 }
 
-/** The QA checklist is the one that says whether a ticket can close, so it leads. */
-function headlineChecklist(page: NotionPage): NotionChecklist | null {
-  return page.checklists.find((list) => /\bqa\b/i.test(list.heading ?? "")) ?? page.checklists[0] ?? null;
-}
-
 function shortHeading(heading: string | null): string {
   if (!heading) return "To-dos";
   return heading.replace(/^[^\p{L}\p{N}]+/u, "").trim() || heading;
@@ -61,7 +57,6 @@ function shortHeading(heading: string | null): string {
 export function NotionCardItem({ theme, layout, item }: PluginTimelineItemProps<NotionCardData>) {
   const { pageId, action, status, command, output, exitCode, showCommand } = item.data;
   const [expanded, setExpanded] = useState(action === "create");
-  const [showOutput, setShowOutput] = useState(false);
   const [openLists, setOpenLists] = useState<ReadonlySet<number>>(() => new Set());
   const loadPage = useRpc(notionPageRpc);
   const queryClient = useQueryClient();
@@ -93,163 +88,37 @@ export function NotionCardItem({ theme, layout, item }: PluginTimelineItemProps<
     return () => clearInterval(timer);
   }, []);
 
-  const styles = useMemo(() => {
-    const small = layout.compact ? 11 : 12;
-    return {
-      card: {
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        borderRadius: 10,
-        backgroundColor: theme.colors.surface1,
-        overflow: "hidden" as const,
-        marginVertical: 2,
-      },
-      head: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8, padding: 10 },
-      emoji: { fontSize: 16, width: 20, textAlign: "center" as const },
-      headText: { flex: 1, gap: 2 },
-      title: { color: theme.colors.foreground, fontSize: 13, fontWeight: "600" as const },
-      meta: { color: theme.colors.foregroundMuted, fontSize: small },
-      pill: {
-        flexDirection: "row" as const,
-        alignItems: "center" as const,
-        gap: 5,
-        paddingHorizontal: 8,
-        paddingVertical: 2,
-        borderRadius: 999,
-      },
-      dot: { width: 7, height: 7, borderRadius: 4 },
-      pillText: { fontSize: 11, fontWeight: "600" as const },
-      progressMini: { flexDirection: "row" as const, alignItems: "center" as const, gap: 4 },
-      progressMiniText: { color: theme.colors.foregroundMuted, fontSize: 11, fontWeight: "600" as const },
-      props: {
-        flexDirection: "row" as const,
-        flexWrap: "wrap" as const,
-        gap: 6,
-        paddingHorizontal: 10,
-        paddingBottom: 10,
-      },
-      prop: {
-        flexDirection: "row" as const,
-        alignItems: "center" as const,
-        gap: 4,
-        paddingHorizontal: 7,
-        paddingVertical: 3,
-        borderRadius: 6,
-        backgroundColor: theme.colors.surface2,
-        maxWidth: "100%" as const,
-      },
-      propName: { color: theme.colors.foregroundMuted, fontSize: 11 },
-      propValue: { color: theme.colors.foreground, fontSize: 11, fontWeight: "500" as const, flexShrink: 1 },
-      section: { borderTopWidth: 1, borderTopColor: theme.colors.border },
-      listHead: {
-        flexDirection: "row" as const,
-        alignItems: "center" as const,
-        gap: 8,
-        paddingHorizontal: 10,
-        paddingVertical: 8,
-      },
-      listTitle: { color: theme.colors.foreground, fontSize: 12, fontWeight: "500" as const, flexShrink: 1 },
-      listCount: { color: theme.colors.foregroundMuted, fontSize: 11, fontFamily: MONO },
-      bar: { flex: 1, height: 5, borderRadius: 3, backgroundColor: theme.colors.surface2, overflow: "hidden" as const },
-      todo: {
-        flexDirection: "row" as const,
-        alignItems: "flex-start" as const,
-        gap: 8,
-        paddingLeft: 28,
-        paddingRight: 10,
-        paddingVertical: 3,
-      },
-      todoText: { color: theme.colors.foreground, fontSize: 12, flex: 1, lineHeight: 17 },
-      todoDone: { color: theme.colors.foregroundMuted, textDecorationLine: "line-through" as const },
-      footer: {
-        flexDirection: "row" as const,
-        flexWrap: "wrap" as const,
-        alignItems: "center" as const,
-        gap: 8,
-        padding: 10,
-        borderTopWidth: 1,
-        borderTopColor: theme.colors.border,
-      },
-      button: {
-        flexDirection: "row" as const,
-        alignItems: "center" as const,
-        gap: 6,
-        paddingHorizontal: 10,
-        paddingVertical: 6,
-        borderRadius: 7,
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        backgroundColor: theme.colors.surface0,
-      },
-      buttonLabel: { color: theme.colors.foreground, fontSize: 12, fontWeight: "500" as const },
-      updated: { color: theme.colors.foregroundMuted, fontSize: 11, marginLeft: "auto" as const },
-      commandRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6, paddingVertical: 4 },
-      command: { color: theme.colors.foregroundMuted, fontFamily: MONO, fontSize: 12, flexShrink: 1 },
-      output: {
-        maxHeight: 220,
-        borderRadius: 6,
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        backgroundColor: theme.colors.surface1,
-        padding: 8,
-        marginBottom: 6,
-      },
-      outputText: { color: theme.colors.foreground, fontFamily: MONO, fontSize: 11 },
-      error: { color: theme.colors.statusDanger, fontSize: 12 },
-      statusRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8, padding: 10 },
-    };
-  }, [theme, layout.compact]);
+  const muted = theme.colors.foregroundMuted;
+  const meta = { color: muted, fontSize: layout.compact ? 11 : 12 };
+  const pad = layout.compact ? 10 : 12;
 
-  const commandHeader = showCommand ? (
-    <>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={showOutput ? "Hide command output" : "Show command output"}
-        style={styles.commandRow}
-        onPress={() => setShowOutput((value) => !value)}
-      >
-        <Icon name="SquareTerminal" size={13} color={theme.colors.foregroundMuted} />
-        <Text style={styles.command} numberOfLines={showOutput ? undefined : 1}>
-          {command}
-        </Text>
-        {status === "running" ? <ActivityIndicator size="small" color={theme.colors.foregroundMuted} /> : null}
-        {exitCode !== null && exitCode !== 0 ? <Text style={styles.error}>exit {exitCode}</Text> : null}
-        <Icon name={showOutput ? "ChevronUp" : "ChevronDown"} size={13} color={theme.colors.foregroundMuted} />
-      </Pressable>
-      {showOutput ? (
-        <ScrollView style={styles.output} nestedScrollEnabled>
-          <Text style={styles.outputText} selectable>
-            {output.length > 0 ? output : "(no output)"}
-          </Text>
-        </ScrollView>
-      ) : null}
-    </>
+  const commandLine = showCommand ? (
+    <CommandLine theme={theme} command={command} output={output} running={status === "running"} exitCode={exitCode} />
   ) : null;
 
   if (!page) {
     const error = query.data?.error ?? (query.error instanceof Error ? query.error.message : null);
     return (
       <View>
-        {commandHeader}
-        <View style={[styles.card, styles.statusRow]}>
-          {error ? (
-            <Icon name="FileX" size={14} color={theme.colors.foregroundMuted} />
-          ) : (
-            <ActivityIndicator size="small" color={theme.colors.accent} />
-          )}
-          <Text style={[styles.meta, { flex: 1 }]} numberOfLines={2}>
-            {error ? `Notion page unavailable: ${error}` : "Loading Notion page…"}
-          </Text>
-        </View>
+        {commandLine}
+        <Card theme={theme}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, padding: pad }}>
+            {error ? <Icon icon={notionLogo(muted)} size={14} /> : <ActivityIndicator size="small" color={muted} />}
+            <Text style={[meta, { flex: 1 }]} numberOfLines={2}>
+              {error ? `Notion page unavailable. ${error}` : "Loading Notion page…"}
+            </Text>
+          </View>
+        </Card>
       </View>
     );
   }
 
-  const headline = headlineChecklist(page);
+  const done = page.checklists.reduce((sum, list) => sum + list.done, 0);
+  const total = page.checklists.reduce((sum, list) => sum + list.total, 0);
   const statusColor = notionColor(page.status?.color ?? null, theme);
-  const subtitle = [ACTION_LABEL[action], page.parent, page.lastEditedAt ? `edited ${ago(page.lastEditedAt, now)} ago` : null]
+  const context = [ACTION_LABEL[action], page.parent, page.lastEditedAt ? `edited ${ago(page.lastEditedAt, now)} ago` : null]
     .filter(Boolean)
-    .join(" · ");
+    .join("  ·  ");
 
   const toggleList = (index: number) =>
     setOpenLists((current) => {
@@ -261,152 +130,186 @@ export function NotionCardItem({ theme, layout, item }: PluginTimelineItemProps<
 
   return (
     <View>
-      {commandHeader}
-      <View style={styles.card}>
+      {commandLine}
+      <Card theme={theme}>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={expanded ? "Collapse Notion page" : "Expand Notion page"}
-          style={styles.head}
           onPress={() => setExpanded((value) => !value)}
+          style={{ paddingHorizontal: pad, paddingTop: pad - 2, paddingBottom: total ? 8 : pad - 2, gap: 4 }}
         >
-          {page.icon ? (
-            <Text style={styles.emoji}>{page.icon}</Text>
-          ) : (
-            <Icon name="FileText" size={16} color={theme.colors.foregroundMuted} />
-          )}
-          <View style={styles.headText}>
-            <Text style={[styles.title, page.inTrash ? styles.todoDone : null]} numberOfLines={expanded ? 3 : 1}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <View style={{ width: 16, alignItems: "center" }}>
+              {page.icon ? (
+                <Text style={{ fontSize: 14 }}>{page.icon}</Text>
+              ) : page.iconUrl ? (
+                <Image source={{ uri: page.iconUrl }} style={{ width: 16, height: 16, borderRadius: 3 }} />
+              ) : (
+                <Icon icon={notionLogo(theme.colors.foreground)} size={15} />
+              )}
+            </View>
+            <Text
+              style={[
+                { color: theme.colors.foreground, fontSize: 13, fontWeight: "600", flex: 1 },
+                page.inTrash ? { textDecorationLine: "line-through", color: muted } : null,
+              ]}
+              numberOfLines={expanded ? 3 : 1}
+            >
               {page.title}
             </Text>
-            <Text style={styles.meta} numberOfLines={1}>
-              {page.inTrash ? "In trash · " : ""}
-              {subtitle}
+            <Icon name={expanded ? "ChevronUp" : "ChevronDown"} size={14} color={muted} />
+          </View>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingLeft: 24 }}>
+            {page.status ? (
+              <>
+                <Dot color={statusColor} />
+                <Text style={[meta, { color: theme.colors.foreground }]}>{page.status.value}</Text>
+                <Text style={meta}>·</Text>
+              </>
+            ) : null}
+            {page.inTrash ? <Text style={[meta, { color: theme.colors.statusDanger }]}>In trash ·</Text> : null}
+            <Text style={[meta, { flex: 1 }]} numberOfLines={1}>
+              {context}
             </Text>
           </View>
-          {headline && !expanded ? (
-            <View style={styles.progressMini}>
-              <Icon
-                name={headline.done === headline.total ? "SquareCheck" : "ListChecks"}
-                size={13}
-                color={headline.done === headline.total ? theme.colors.statusSuccess : theme.colors.foregroundMuted}
-              />
-              <Text style={styles.progressMiniText}>
-                {headline.done}/{headline.total}
+          {total ? (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingLeft: 24, paddingTop: 4 }}>
+              <View style={{ flex: 1 }}>
+                <SegmentBar
+                  theme={theme}
+                  segments={[
+                    { value: done, color: done === total ? theme.colors.statusSuccess : theme.colors.accent },
+                    { value: total - done, color: theme.colors.surface2 },
+                  ]}
+                />
+              </View>
+              <Text style={{ color: muted, fontSize: 11 }}>
+                {done}/{total} to-dos
               </Text>
             </View>
           ) : null}
-          {page.status ? (
-            <View style={[styles.pill, { backgroundColor: `${statusColor}26` }]}>
-              <View style={[styles.dot, { backgroundColor: statusColor }]} />
-              <Text style={[styles.pillText, { color: statusColor }]}>{page.status.value}</Text>
-            </View>
-          ) : null}
-          {query.isFetching ? <ActivityIndicator size="small" color={theme.colors.foregroundMuted} /> : null}
-          <Icon name={expanded ? "ChevronUp" : "ChevronDown"} size={14} color={theme.colors.foregroundMuted} />
         </Pressable>
 
         {expanded ? (
           <>
             {page.properties.length > 0 ? (
-              <View style={styles.props}>
-                {page.properties.map((property) => (
-                  <View key={property.name} style={styles.prop}>
-                    {property.value.toLowerCase().startsWith(property.name.toLowerCase()) ? null : (
-                      <Text style={styles.propName}>{property.name}</Text>
-                    )}
-                    {property.color ? (
-                      <View style={[styles.dot, { backgroundColor: notionColor(property.color, theme) }]} />
-                    ) : null}
-                    <Text style={styles.propValue} numberOfLines={1}>
-                      {property.value}
-                    </Text>
-                  </View>
-                ))}
-              </View>
+              <>
+                <Divider theme={theme} />
+                <View style={{ paddingHorizontal: pad, paddingVertical: 8, gap: 2 }}>
+                  {page.properties.map((property) => (
+                    <View key={property.name} style={{ flexDirection: "row", alignItems: "center", paddingVertical: 3 }}>
+                      <Text style={[meta, { width: layout.compact ? 96 : 132 }]} numberOfLines={1}>
+                        {property.name}
+                      </Text>
+                      <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 6 }}>
+                        {property.color ? <Dot color={notionColor(property.color, theme)} /> : null}
+                        <Text style={{ color: theme.colors.foreground, fontSize: 12, flexShrink: 1 }} numberOfLines={1}>
+                          {property.value}
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              </>
             ) : null}
 
-            {page.checklists.map((list, index) => {
-              const open = openLists.has(index);
-              const complete = list.done === list.total;
-              return (
-                <View key={`${list.heading ?? ""}-${index}`} style={styles.section}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`${shortHeading(list.heading)}: ${list.done} of ${list.total} done`}
-                    style={styles.listHead}
-                    onPress={() => toggleList(index)}
-                  >
-                    <Icon name={open ? "ChevronDown" : "ChevronRight"} size={13} color={theme.colors.foregroundMuted} />
-                    <Text style={styles.listTitle} numberOfLines={1}>
-                      {shortHeading(list.heading)}
-                    </Text>
-                    <View style={styles.bar}>
-                      <View
-                        style={{
-                          width: `${list.total ? Math.round((list.done / list.total) * 100) : 0}%`,
-                          height: "100%",
-                          backgroundColor: complete ? theme.colors.statusSuccess : theme.colors.accent,
-                        }}
-                      />
-                    </View>
-                    <Text style={styles.listCount}>
-                      {list.done}/{list.total}
-                    </Text>
-                  </Pressable>
-                  {open
-                    ? list.items.map((todo, todoIndex) => (
-                        <View key={todoIndex} style={styles.todo}>
-                          <Icon
-                            name={todo.checked ? "SquareCheck" : "Square"}
-                            size={14}
-                            color={todo.checked ? theme.colors.statusSuccess : theme.colors.foregroundMuted}
-                          />
-                          <Text style={[styles.todoText, todo.checked ? styles.todoDone : null]} selectable>
-                            {todo.text || "(empty)"}
+            {page.checklists.length > 0 ? (
+              <>
+                <Divider theme={theme} />
+                <View style={{ paddingVertical: 4 }}>
+                  {page.checklists.map((list, index) => {
+                    const open = openLists.has(index);
+                    const complete = list.done === list.total;
+                    return (
+                      <View key={`${list.heading ?? ""}-${index}`}>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`${shortHeading(list.heading)}: ${list.done} of ${list.total} done`}
+                          onPress={() => toggleList(index)}
+                          style={({ pressed }) => ({
+                            flexDirection: "row",
+                            alignItems: "center",
+                            gap: 10,
+                            paddingHorizontal: pad,
+                            paddingVertical: 7,
+                            backgroundColor: pressed ? theme.colors.surface1 : "transparent",
+                          })}
+                        >
+                          <Icon name={open ? "ChevronDown" : "ChevronRight"} size={14} color={muted} />
+                          <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "500", flex: 1 }} numberOfLines={1}>
+                            {shortHeading(list.heading)}
                           </Text>
-                        </View>
-                      ))
-                    : null}
-                  {open && list.items.length < list.total ? (
-                    <Text style={[styles.meta, { paddingLeft: 28, paddingBottom: 6 }]}>
-                      {list.total - list.items.length} more in Notion
-                    </Text>
-                  ) : null}
+                          <View style={{ width: layout.compact ? 56 : 96 }}>
+                            <SegmentBar
+                              theme={theme}
+                              segments={[
+                                { value: list.done, color: complete ? theme.colors.statusSuccess : theme.colors.accent },
+                                { value: list.total - list.done, color: theme.colors.surface2 },
+                              ]}
+                            />
+                          </View>
+                          <Text style={{ color: muted, fontSize: 11, fontFamily: MONO, minWidth: 36, textAlign: "right" }}>
+                            {list.done}/{list.total}
+                          </Text>
+                        </Pressable>
+                        {open
+                          ? list.items.map((todo, todoIndex) => (
+                              <View
+                                key={todoIndex}
+                                style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, paddingLeft: pad + 24, paddingRight: pad, paddingVertical: 3 }}
+                              >
+                                <View style={{ paddingTop: 1 }}>
+                                  <Icon
+                                    name={todo.checked ? "SquareCheck" : "Square"}
+                                    size={13}
+                                    color={todo.checked ? theme.colors.statusSuccess : muted}
+                                  />
+                                </View>
+                                <Text
+                                  style={[
+                                    { color: theme.colors.foreground, fontSize: 12, flex: 1, lineHeight: 17 },
+                                    todo.checked ? { color: muted } : null,
+                                  ]}
+                                  selectable
+                                >
+                                  {todo.text || "(empty)"}
+                                </Text>
+                              </View>
+                            ))
+                          : null}
+                        {open && list.items.length < list.total ? (
+                          <Text style={[meta, { paddingLeft: pad + 24, paddingVertical: 4 }]}>
+                            {list.total - list.items.length} more in Notion
+                          </Text>
+                        ) : null}
+                      </View>
+                    );
+                  })}
                 </View>
-              );
-            })}
+              </>
+            ) : null}
 
-            <View style={styles.footer}>
-              <Pressable accessibilityRole="link" style={styles.button} onPress={() => void openExternalUrl(page.url)}>
-                <Icon name="ExternalLink" size={13} color={theme.colors.foreground} />
-                <Text style={styles.buttonLabel}>Open in Notion</Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                style={styles.button}
+            <Divider theme={theme} />
+            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 2, paddingHorizontal: pad - 6, paddingVertical: 4 }}>
+              <Action theme={theme} icon="ExternalLink" label="Open in Notion" onPress={() => void openExternalUrl(page.url)} />
+              <Action
+                theme={theme}
+                icon="Link"
+                label="Copy link"
                 onPress={() =>
                   copyText(page.url).then(
-                    () => toast.show("Notion link copied", { variant: "success" }),
+                    () => toast.show("Link copied", { variant: "success" }),
                     () => toast.error("Copy failed"),
                   )
                 }
-              >
-                <Icon name="Copy" size={13} color={theme.colors.foreground} />
-                <Text style={styles.buttonLabel}>Copy link</Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Refresh"
-                style={styles.button}
-                onPress={() => void query.refetch()}
-              >
-                <Icon name="RefreshCw" size={13} color={theme.colors.foreground} />
-              </Pressable>
-              <Text style={styles.updated}>Updated {ago(page.fetchedAt, now) ?? "0s"} ago</Text>
+              />
+              <View style={{ flex: 1 }} />
+              <Text style={{ color: muted, fontSize: 11 }}>Updated {ago(page.fetchedAt, now) ?? "0s"} ago</Text>
+              <Action theme={theme} icon="RefreshCw" accessibilityLabel="Refresh" onPress={() => void query.refetch()} />
             </View>
           </>
         ) : null}
-      </View>
+      </Card>
     </View>
   );
 }

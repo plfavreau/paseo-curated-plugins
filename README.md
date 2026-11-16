@@ -12,7 +12,7 @@ Custom plugins for [Paseo](https://paseo.sh). Each directory is a standalone plu
 | [`pdf-preview`](./pdf-preview) | Renders page thumbnails for PDFs the agent reads or runs a command on, with a page-by-page viewer. |
 | [`pr-card`](./pr-card) | Turns `gh pr` commands into a live pull request card with CI checks, review state and a re-run button. |
 | [`sql-table`](./sql-table) | Shows database query output (psql, Supabase, sqlite…) as a table you can expand row by row and copy as CSV, Markdown or JSON. |
-| [`notion-card`](./notion-card) | Turns `ntn` commands on a Notion page into a live card with its status, properties and to-do / QA checklist progress. |
+| [`notion-card`](./notion-card) | Turns `ntn` commands on a Notion page into a live card with its status, properties and to-do progress. |
 
 ## Install
 
@@ -89,9 +89,9 @@ Parses psql aligned output in the unicode and ASCII styles (multi-line cells and
 
 ## notion-card
 
-A shell command running the Notion CLI on a page (`ntn pages get`, `edit`, `create`, `trash`, or `ntn api` on `/v1/pages/<id>` and `/v1/blocks/<id>/children`) becomes a card for that page: icon, title, parent database, status pill and the progress of the page's QA checklist (or first to-do list). Expanded, it lists the main properties (people, selects, story points, sprint and other relations by title, dates) and every to-do list with a progress bar and its items, then opens the page in Notion or copies its link.
+A shell command running the Notion CLI on a page (`ntn pages get`, `edit`, `create`, `trash`, or `ntn api` on `/v1/pages/<id>` and `/v1/blocks/<id>/children`) becomes a card for that page: icon, title, parent database, status and overall to-do progress. Expanded, it lists the main properties (people, selects, story points, sprint and other relations by title, dates) and every to-do list with a progress bar and its items, then opens the page in Notion or copies its link.
 
-When a write finishes, the card refetches the page, and every earlier card of the same page updates too, so the ticket's move from Doing to Review to QA is visible in place. Expanded cards refresh every minute. The page id comes from the command (UUID, 32-hex id or notion.so URL); for creates it comes from the output, never from `--parent`. Up to three pages per command.
+When a write finishes, the card refetches the page, and every earlier card of the same page updates too, so a status change shows up in place. Expanded cards refresh every minute. The page id comes from the command (UUID, 32-hex id or notion.so URL); for creates it comes from the output, never from `--parent`. Up to three pages per command.
 
 Requires the `ntn` CLI on the daemon machine, logged in (looked up on PATH, then `~/.local/bin`).
 

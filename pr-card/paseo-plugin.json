@@ -1,0 +1,7 @@
+{
+  "id": "pr-card",
+  "name": "PR card",
+  "requirements": {
+    "paseo": ">=0.16.0-beta.0"
+  }
+}

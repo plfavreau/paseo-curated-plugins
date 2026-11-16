@@ -10,6 +10,7 @@ Custom plugins for [Paseo](https://paseo.sh). Each directory is a standalone plu
 | [`pin-notes`](./pin-notes) | Pin notes and links to a conversation, shown as pills above the composer with the page title and favicon. |
 | [`quote-selection`](./quote-selection) | Select text in a conversation and quote it into the prompt with one click or the Q key. |
 | [`pdf-preview`](./pdf-preview) | Renders page thumbnails for PDFs the agent reads or runs a command on, with a page-by-page viewer. |
+| [`pr-card`](./pr-card) | Turns `gh pr` commands into a live pull request card with CI checks, review state and a re-run button. |
 
 ## Install
 
@@ -67,6 +68,16 @@ Tap the thumbnail to page through the document; arrow keys turn pages and Escape
 Paths in shell commands are resolved against the command's working directory. Globs (`*.pdf`) and paths containing `$` are ignored, and a path that is not a real file shows a quiet "no preview" line.
 
 Requires poppler (`pdfinfo`, `pdftoppm`) on the daemon machine.
+
+## pr-card
+
+A shell command running `gh pr create`, `view`, `checks`, `merge`, `edit` or similar becomes a live card for the pull request: state, title, branches, diff size, review decision, unresolved threads and merge status, then every CI check of the head commit with failing and running jobs first and live timers. Tap a check to open its logs; the footer opens the PR, copies its link, refreshes, and re-runs failed workflow jobs.
+
+The card polls GitHub every 10 seconds while checks run, every minute while the PR is open, and stops once it is merged or closed. Cards for the same PR share one request. After `gh pr create` the card opens expanded; for other commands it starts as a one-line summary, so an agent polling `gh pr checks` does not flood the timeline. The command stays visible above the card and its output expands on tap.
+
+The PR is read from the URL `gh pr create` prints, a URL or number argument, and `-R owner/repo`. A bare number or branch is resolved with `gh pr view` in the command's working directory (`cd dir && gh pr ...` is followed).
+
+Requires the GitHub CLI (`gh`) on the daemon machine, logged in.
 
 ## system-health
 

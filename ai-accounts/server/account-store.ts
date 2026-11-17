@@ -33,6 +33,9 @@ export interface StoredAccount {
   needsReauth?: string;
   /** The vendor refused this account for hitting its plan limit, until this time. */
   limitedUntil?: string;
+  /** No process renews this login before this time, after the vendor throttled or refused a renewal. */
+  refreshRetryAt?: string;
+  refreshFailures?: number;
 }
 
 export interface AutoSwitchSettings {
@@ -82,12 +85,20 @@ export const DEFAULT_BALANCE_SETTINGS: BalanceSettings = { housekeepingToCodex: 
 
 const EMPTY_STORE: Store = { version: 2, accounts: [], assignments: {}, defaultAccountIds: {}, preferredAccountIds: {} };
 const USAGE_TTL_MS = 120_000;
+const REFRESH_MARGIN_MS = 5 * 60_000;
+const USABLE_MARGIN_MS = 30_000;
+const REFRESH_TIMEOUT_MS = 10_000;
+const REFRESH_BACKOFF_MS = 30_000;
+const MAX_REFRESH_BACKOFF_MS = 15 * 60_000;
+const REJECTED_REFRESH_RETRY_MS = 60 * 60_000;
+// Longer than a renewal can hold the lock, so concurrent OpenCode starts wait for it instead of failing.
+const LOCK_WAIT_MS = 20_000;
 
 let usageRefresh: Promise<void> | undefined;
 
 async function acquireLock(): Promise<() => Promise<void>> {
   await mkdir(DATA_DIR, { recursive: true, mode: 0o700 });
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  for (const deadline = Date.now() + LOCK_WAIT_MS; Date.now() < deadline; ) {
     try {
       await mkdir(LOCK_PATH, { mode: 0o700 });
       return () => rm(LOCK_PATH, { recursive: true, force: true });
@@ -267,7 +278,7 @@ async function saveAccountInStore(store: Store, provider: AccountProvider, crede
     updatedAt: now,
   };
   Object.assign(account, credentials, { provider, email, externalAccountId, plan, updatedAt: now });
-  delete account.needsReauth;
+  clearRefreshFailure(account);
   if (!existing) store.accounts.push(account);
   store.defaultAccountIds[provider] ??= account.id;
   if (provider === "anthropic" && (await hasNamespace(account.id))) await writeClaudeCredentials(account);
@@ -395,7 +406,8 @@ export async function selectedAccount(provider: AccountProvider, keys?: OwnerKey
   if (candidates.length <= 1) return candidates[0];
   const explicit = assignedAccount(store, provider, keys);
   if (explicit) return explicit;
-  await refreshStaleUsage(candidates);
+  // Usage only ranks the accounts; failing to read it must not fail the session.
+  await refreshStaleUsage(candidates).catch((error) => console.error("Could not refresh AI account usage:", error));
   store = await readStore();
   const resolved = resolveAccount(store, provider, keys);
   const owner = ownerChain(keys)[0];
@@ -414,7 +426,7 @@ export async function adoptClaudeRotation(account: StoredAccount): Promise<boole
   account.refresh = external.refresh;
   account.expires = external.expires;
   account.updatedAt = new Date().toISOString();
-  delete account.needsReauth;
+  clearRefreshFailure(account);
   return true;
 }
 
@@ -426,6 +438,7 @@ function requestRefresh(provider: AccountProvider, refresh: string): Promise<Res
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ grant_type: "refresh_token", refresh_token: refresh, client_id: ANTHROPIC_CLIENT_ID }),
+    signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
   });
 }
 
@@ -467,20 +480,65 @@ async function adoptOpenCodeRotation(account: StoredAccount): Promise<boolean> {
   }
 }
 
+function retryAfterMs(response: Response): number {
+  const header = response.headers.get("retry-after");
+  if (!header) return 0;
+  const seconds = Number(header);
+  const at = Number.isFinite(seconds) ? Date.now() + seconds * 1000 : Date.parse(header);
+  return Number.isNaN(at) ? 0 : Math.max(0, at - Date.now());
+}
+
+/** Persisted in the shared store, so every OpenCode process on the host waits out the same backoff. */
+function deferRefresh(account: StoredAccount, minimumMs: number): void {
+  const failures = (account.refreshFailures ?? 0) + 1;
+  const backoff = Math.min(REFRESH_BACKOFF_MS * 2 ** (failures - 1), MAX_REFRESH_BACKOFF_MS);
+  const jittered = backoff * (0.5 + Math.random() / 2);
+  account.refreshFailures = failures;
+  account.refreshRetryAt = new Date(Date.now() + Math.max(minimumMs, jittered)).toISOString();
+}
+
+function clearRefreshFailure(account: StoredAccount): void {
+  delete account.needsReauth;
+  delete account.refreshRetryAt;
+  delete account.refreshFailures;
+}
+
+/**
+ * Never throws for a vendor refusal: the outcome is recorded on the account, which `withStore` only
+ * persists when the mutation returns, so the next process sees the backoff instead of retrying.
+ */
 async function refreshCredentials(account: StoredAccount): Promise<void> {
   requireManagedProvider(account.provider);
-  const label = account.provider === "anthropic" ? "Claude" : "Codex";
   if (await adoptClaudeRotation(account)) return;
-  const response = await requestRefresh(account.provider, account.refresh);
-  if (response.ok) applyTokens(account, (await response.json()) as TokenResponse);
-  else if (!tokenRejected(response.status)) throw new Error(`${label} token refresh failed (${response.status})`);
-  else if (!(await adoptOpenCodeRotation(account))) {
-    // A rejected refresh token never recovers on its own, so record it for the UI instead of throwing
-    // and losing the flag: `withStore` only persists when the mutation returns.
-    account.needsReauth = new Date().toISOString();
+  if (account.refreshRetryAt && Date.parse(account.refreshRetryAt) > Date.now()) return;
+  let response: Response;
+  try {
+    response = await requestRefresh(account.provider, account.refresh);
+  } catch (error) {
+    console.error(`Could not renew the ${account.email} Claude login:`, error);
+    deferRefresh(account, 0);
     return;
   }
+  if (response.ok) applyTokens(account, (await response.json()) as TokenResponse);
+  else if (!tokenRejected(response.status)) {
+    await response.body?.cancel();
+    deferRefresh(account, retryAfterMs(response));
+    return;
+  } else {
+    await response.body?.cancel();
+    if (!(await adoptOpenCodeRotation(account))) {
+      account.needsReauth = new Date().toISOString();
+      deferRefresh(account, REJECTED_REFRESH_RETRY_MS);
+      return;
+    }
+  }
   if (account.provider === "anthropic" && (await hasNamespace(account.id))) await writeClaudeCredentials(account);
+}
+
+function usableOrThrow(account: StoredAccount | undefined): StoredAccount | undefined {
+  if (!account || account.expires > Date.now() + USABLE_MARGIN_MS) return account;
+  if (account.needsReauth) throw new Error(`Claude refused the login of ${account.email}: sign in again in AI accounts`);
+  throw new Error(`Claude token refresh for ${account.email} is backing off until ${account.refreshRetryAt ?? "later"}`);
 }
 
 function applyTokens(account: StoredAccount, body: TokenResponse): void {
@@ -488,7 +546,7 @@ function applyTokens(account: StoredAccount, body: TokenResponse): void {
   account.refresh = body.refresh_token ?? account.refresh;
   account.expires = Date.now() + body.expires_in * 1000;
   account.updatedAt = new Date().toISOString();
-  delete account.needsReauth;
+  clearRefreshFailure(account);
 }
 
 /**
@@ -514,13 +572,14 @@ export async function forceRefreshAccount(provider: AccountProvider, keys?: Owne
 export async function ensureFreshAccount(provider: AccountProvider, keys?: OwnerKeys): Promise<StoredAccount | undefined> {
   requireManagedProvider(provider);
   const current = await selectedAccount(provider, keys);
-  if (!current || current.expires > Date.now() + 60_000) return current;
-  return withStore(async (store) => {
+  if (!current || current.expires > Date.now() + REFRESH_MARGIN_MS) return current;
+  const account = await withStore(async (store) => {
     const account = resolveAccount(store, provider, keys);
-    if (!account || account.expires > Date.now() + 60_000) return account;
+    if (!account || account.expires > Date.now() + REFRESH_MARGIN_MS) return account;
     await refreshCredentials(account);
     return account;
   });
+  return usableOrThrow(account);
 }
 
 export async function refreshUsage(accountId: string): Promise<void> {
@@ -529,9 +588,15 @@ export async function refreshUsage(accountId: string): Promise<void> {
   const account = await withStore(async (store) => {
     const found = store.accounts.find((candidate) => candidate.id === accountId);
     if (!found) throw new Error("AI account not found");
-    if (found.expires <= Date.now() + 60_000) await refreshCredentials(found);
+    if (found.expires <= Date.now() + REFRESH_MARGIN_MS) await refreshCredentials(found);
+    if (found.expires <= Date.now() + USABLE_MARGIN_MS) {
+      found.usageFetchedAt = new Date().toISOString();
+      found.usageError = found.needsReauth ? "Sign in again" : "Token refresh is backing off";
+      return undefined;
+    }
     return { id: found.id, provider: found.provider, access: found.access, externalAccountId: found.externalAccountId };
   });
+  if (!account) return;
   try {
     const response = await fetch(
       // `cedar_ember` adds the banked limit resets, as Claude Code's /limit-reset reads them.

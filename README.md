@@ -40,7 +40,7 @@ Query output (psql, Supabase, sqlite, MySQL…) shows as a table: tap a row to r
 <img src="docs/screenshots/notion-card.png" width="680" alt="notion-card">
 
 ### [`quote-selection`](./quote-selection)
-Select text in a message and press Q to quote it into the prompt.
+Select text in a message and press Q to comment on it, like reviewing a doc: numbered badges in the chat, an "N annotations" pill with Clear all and Send now, and comments sent with your next message.
 
 ## Around it
 

@@ -1,173 +1,66 @@
 import { Platform } from "react-native";
+import { formatNotes, type Note, type Notebook } from "./notes";
+import {
+  COMPOSER,
+  COMPOSER_ROOT,
+  EDITABLE,
+  TRANSCRIPT,
+  agentIdOf,
+  deleteRange,
+  elementOf,
+  findPassage,
+  insertAt,
+  isVisible,
+  readPassage,
+  web,
+  type Dom,
+  type Passage,
+} from "./web/dom";
+import { createUi, type BadgeSpot } from "./web/ui";
 
-// This plugin typechecks without the DOM library. Declare only what this module uses.
-interface Rect {
-  top: number;
-  bottom: number;
-  left: number;
-  right: number;
-  width: number;
-  height: number;
-}
-interface Node {
-  parentElement: Element | null;
-  contains(other: Node | null): boolean;
-}
-interface Element extends Node {
-  closest(selector: string): Element | null;
-  querySelector(selector: string): Element | null;
-  getAttribute(name: string): string | null;
-}
-interface HTMLElement extends Element {
-  style: Record<string, string>;
-  innerHTML: string;
-  title: string;
-  setAttribute(name: string, value: string): void;
-  addEventListener(type: string, listener: (event: DomEvent) => void): void;
-  remove(): void;
-  focus(): void;
-  appendChild(child: HTMLElement): void;
-  dispatchEvent(event: object): boolean;
-}
-interface TextArea extends HTMLElement {
-  value: string;
-  setSelectionRange(start: number, end: number): void;
-  scrollTop: number;
-  scrollHeight: number;
-}
-interface DomEvent {
-  target: Node | null;
-  key?: string;
-  preventDefault(): void;
-  stopPropagation(): void;
-}
-interface Range {
-  commonAncestorContainer: Node;
-  getBoundingClientRect(): Rect;
-}
-interface Selection {
-  isCollapsed: boolean;
-  rangeCount: number;
-  anchorNode: Node | null;
-  focusNode: Node | null;
-  toString(): string;
-  getRangeAt(index: number): Range;
-  removeAllRanges(): void;
-}
-declare const window: {
-  getSelection(): Selection | null;
-  innerWidth: number;
-  addEventListener(type: string, listener: (event: DomEvent) => void, options?: boolean): void;
-  removeEventListener(type: string, listener: (event: DomEvent) => void, options?: boolean): void;
-  setTimeout(callback: () => void, ms: number): number;
-};
-declare const document: {
-  body: HTMLElement;
-  createElement(tag: string): HTMLElement;
-  addEventListener(type: string, listener: (event: DomEvent) => void, options?: boolean): void;
-  removeEventListener(type: string, listener: (event: DomEvent) => void, options?: boolean): void;
-};
-declare const HTMLTextAreaElement: { prototype: object };
-declare const InputEvent: new (type: string, init: { bubbles: boolean }) => object;
+const HIGHLIGHT = "quote-selection";
+const DRAFT_HIGHLIGHT = "quote-selection-draft";
+const PAGE_STYLE = `
+::highlight(${HIGHLIGHT}) { background-color: rgba(91, 95, 230, 0.16); }
+::highlight(${DRAFT_HIGHLIGHT}) { background-color: rgba(91, 95, 230, 0.3); }
+`;
 
-const COMPOSER_TEXTAREA = '[data-testid="message-input-root"] textarea';
-const EDITABLE = 'textarea, input, [contenteditable="true"], [data-testid="message-input-root"]';
-const QUOTE_ICON =
-  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z"/><path d="M5 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z"/></svg>';
-
-interface Pending {
-  text: string;
-  composer: TextArea;
-}
-
-function elementOf(node: Node | null): Element | null {
-  if (!node) return null;
-  return (node as Element).closest ? (node as Element) : node.parentElement;
-}
-
-// The composer sharing the nearest ancestor with the selection is the one of its pane.
-function composerFor(node: Node): TextArea | null {
-  for (let el = elementOf(node); el; el = el.parentElement) {
-    const textarea = el.querySelector(COMPOSER_TEXTAREA);
-    if (textarea) return textarea as TextArea;
-  }
-  return null;
-}
-
-function readSelection(): (Pending & { rect: Rect }) | null {
-  const selection = window.getSelection();
-  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
-  const text = selection.toString().trim();
-  if (!text) return null;
-  for (const node of [selection.anchorNode, selection.focusNode]) {
-    if (elementOf(node)?.closest(EDITABLE)) return null;
-  }
-  const range = selection.getRangeAt(0);
-  const composer = composerFor(range.commonAncestorContainer);
-  if (!composer) return null;
-  return { text, composer, rect: range.getBoundingClientRect() };
-}
-
-export function formatQuote(text: string): string {
-  return text
-    .split(/\r?\n/)
-    .map((line) => (line.trim() ? `> ${line}` : ">"))
-    .join("\n");
-}
-
-function insertQuote({ text, composer }: Pending): void {
-  const current = composer.value.replace(/\s+$/, "");
-  const next = `${current ? `${current}\n\n` : ""}${formatQuote(text)}\n\n`;
-  // React owns the textarea value, so write through the native setter and announce an input.
-  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-  if (!setter) return;
-  setter.call(composer, next);
-  composer.dispatchEvent(new InputEvent("input", { bubbles: true }));
-  const focusEnd = () => {
-    composer.focus();
-    composer.setSelectionRange(next.length, next.length);
-    composer.scrollTop = composer.scrollHeight;
-  };
-  focusEnd();
-  // React re-renders after the input event and can drop the caret, so place it again once settled.
-  window.setTimeout(focusEnd, 50);
-}
-
-function createButton(): HTMLElement {
-  const button = document.createElement("button");
-  button.setAttribute("type", "button");
-  button.setAttribute("aria-label", "Quote selection in the prompt");
-  button.title = "Quote in prompt (Q)";
-  button.innerHTML = `${QUOTE_ICON}<span>Quote</span>`;
-  Object.assign(button.style, {
-    position: "fixed",
-    zIndex: "2147483647",
-    display: "none",
-    alignItems: "center",
-    gap: "6px",
-    padding: "5px 10px",
-    borderRadius: "8px",
-    border: "1px solid rgba(127,127,127,0.35)",
-    background: "rgba(24,24,27,0.96)",
-    color: "#fafafa",
-    font: "500 12px/16px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-    boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
-    cursor: "pointer",
-    userSelect: "none",
-  });
-  return button;
-}
-
-// Paseo runs one instance per connected host in the same window; only the first may own the page,
-// otherwise each one quotes the selection on Q. When it stops, the next one takes over.
+// Paseo runs one instance per connected host in the same window. Each host registers its notebook;
+// only the first instance drives the page, and finds the notebook of whichever agent a chat shows.
+// When it stops, the next one takes over.
 interface Claim {
   start: () => () => void;
   stop: (() => void) | null;
 }
-const holder = globalThis as { __quoteSelectionRuntime?: { queue: Claim[]; owner: Claim | null } };
+interface Runtime {
+  queue: Claim[];
+  owner: Claim | null;
+  notebooks: Set<Notebook>;
+  redraw: (() => void) | null;
+}
+const holder = globalThis as { __quoteSelectionRuntime?: Runtime };
+const runtime = (holder.__quoteSelectionRuntime ??= { queue: [], owner: null, notebooks: new Set(), redraw: null });
+
+function notebookFor(agentId: string | null): Notebook | null {
+  if (!agentId) return null;
+  for (const notebook of runtime.notebooks) if (notebook.has(agentId)) return notebook;
+  return null;
+}
+
+export function installWeb(notebook: Notebook): () => void {
+  if (Platform.OS !== "web") return () => {};
+  runtime.notebooks.add(notebook);
+  const unsubscribe = notebook.subscribe(() => runtime.redraw?.());
+  const release = claimPage(mount);
+  return () => {
+    unsubscribe();
+    runtime.notebooks.delete(notebook);
+    release();
+    runtime.redraw?.();
+  };
+}
 
 function claimPage(start: () => () => void): () => void {
-  const runtime = (holder.__quoteSelectionRuntime ??= { queue: [], owner: null });
   const promote = () => {
     const next = runtime.queue[0];
     if (runtime.owner || !next) return;
@@ -186,81 +79,245 @@ function claimPage(start: () => () => void): () => void {
   };
 }
 
-export function installSelectionQuote(): () => void {
-  if (Platform.OS !== "web") return () => {};
-  return claimPage(mountSelectionQuote);
+/** The composer of the pane a chat element sits in: the nearest one sharing an ancestor with it. */
+function composerNear(element: Dom): Dom {
+  for (let node = element; node; node = node.parentElement) {
+    const input = node.querySelector?.(COMPOSER);
+    if (input) return input;
+  }
+  return null;
 }
 
-function mountSelectionQuote(): () => void {
-  const button = createButton();
-  document.body.appendChild(button);
-  let pending: Pending | null = null;
+function mount(): () => void {
+  const highlights = web.CSS?.highlights;
+  const Highlight = web.Highlight;
+  const style = web.document.createElement("style");
+  style.textContent = PAGE_STYLE;
+  web.document.head.appendChild(style);
 
-  const hide = () => {
+  let pending: Passage | null = null;
+  const ui = createUi({ comment: () => openNewComment(), copy: () => copySelection() });
+
+  const setDraft = (range: Dom) => {
+    if (!highlights || !Highlight) return;
+    if (range) highlights.set(DRAFT_HIGHLIGHT, new Highlight(range));
+    else highlights.delete(DRAFT_HIGHLIGHT);
+  };
+
+  // Where each note sits in the page. A cached range stays valid while its text nodes are mounted.
+  const ranges = new Map<string, Dom>();
+  const rangeOf = (transcript: Dom, note: Note) => {
+    const cached = ranges.get(note.id);
+    if (cached && cached.startContainer.isConnected && cached.endContainer.isConnected && !cached.collapsed) {
+      if (transcript.contains(cached.startContainer)) return cached;
+    }
+    const found = findPassage(transcript, note.quote, note.messageId);
+    if (found) ranges.set(note.id, found);
+    else ranges.delete(note.id);
+    return found;
+  };
+
+  // The badges sit above the whole page, so one is hidden when the app draws something over its
+  // spot in the chat, such as a popover or a menu.
+  const coveredOutside = (transcript: Dom, x: number, y: number) => {
+    const top = (web.document.elementsFromPoint(x, y) as Dom[]).find((element) => !ui.owns(element));
+    return !top || !transcript.contains(top);
+  };
+
+  const redraw = () => {
+    const all: Dom[] = [];
+    const spots: BadgeSpot[] = [];
+    const taken = new Map<string, number>();
+    for (const transcript of Array.from(web.document.querySelectorAll(TRANSCRIPT) as ArrayLike<Dom>)) {
+      if (!isVisible(transcript)) continue;
+      const agentId = agentIdOf(transcript);
+      const notebook = notebookFor(agentId);
+      if (!agentId || !notebook) continue;
+      const box = transcript.getBoundingClientRect();
+      notebook.get(agentId).forEach((note, index) => {
+        const range = rangeOf(transcript, note);
+        if (!range) return;
+        all.push(range);
+        const first = range.getClientRects()[0];
+        if (!first || first.top < box.top || first.top > box.bottom - 8) return;
+        // Notes on the same passage line their badges up instead of covering each other.
+        const spot = `${Math.round(first.left)},${Math.round(first.top)}`;
+        const stacked = taken.get(spot) ?? 0;
+        taken.set(spot, stacked + 1);
+        const left = first.left - 9 + stacked * 16;
+        const top = first.top - 12;
+        if (coveredOutside(transcript, left + 9, top + 9)) return;
+        spots.push({
+          key: note.id,
+          label: String(index + 1),
+          left,
+          top,
+          open: (rect) => openEdit(notebook, agentId, note, range, rect),
+        });
+      });
+    }
+    if (highlights && Highlight) {
+      if (all.length) highlights.set(HIGHLIGHT, new Highlight(...all));
+      else highlights.delete(HIGHLIGHT);
+    }
+    ui.renderBadges(spots);
+  };
+
+  let frame = 0;
+  const scheduleRedraw = () => {
+    if (frame) return;
+    frame = web.requestAnimationFrame(() => {
+      frame = 0;
+      redraw();
+    });
+  };
+  runtime.redraw = scheduleRedraw;
+
+  function openNewComment() {
+    const passage = pending ?? readPassage();
+    if (!passage) return;
+    const notebook = notebookFor(passage.agentId);
+    if (!notebook) return;
     pending = null;
-    button.style.display = "none";
-  };
+    ui.hideToolbar();
+    setDraft(passage.range);
+    const rect = passage.range.getBoundingClientRect();
+    web.getSelection()?.removeAllRanges();
+    ui.openCard({
+      quote: passage.quote,
+      comment: "",
+      rect,
+      editing: false,
+      submit(comment) {
+        notebook.add(passage.agentId, {
+          quote: passage.quote,
+          comment,
+          messageId: passage.messageId,
+          role: passage.role,
+        });
+        composerNear(passage.transcript)?.focus({ preventScroll: true });
+      },
+      closed: () => setDraft(null),
+    });
+  }
 
-  const show = () => {
-    const current = readSelection();
-    if (!current) return hide();
-    pending = { text: current.text, composer: current.composer };
-    const width = 84;
-    const left = Math.min(Math.max(8, current.rect.right - width), window.innerWidth - width - 8);
-    const above = current.rect.top - 34;
-    button.style.left = `${left}px`;
-    button.style.top = `${above > 8 ? above : current.rect.bottom + 6}px`;
-    button.style.display = "flex";
-  };
+  function openEdit(notebook: Notebook, agentId: string, note: Note, range: Dom, rect: Dom) {
+    setDraft(range);
+    ui.openCard({
+      quote: note.quote,
+      comment: note.comment,
+      rect,
+      editing: true,
+      submit: (comment) => notebook.update(agentId, note.id, comment),
+      remove: () => notebook.remove(agentId, [note.id]),
+      closed: () => setDraft(null),
+    });
+  }
 
-  const quote = () => {
-    const current = pending ?? readSelection();
-    if (!current) return;
-    window.getSelection()?.removeAllRanges();
-    hide();
-    insertQuote(current);
-  };
+  function copySelection() {
+    const passage = pending ?? readPassage();
+    ui.hideToolbar();
+    pending = null;
+    if (passage) void web.navigator.clipboard?.writeText(passage.quote);
+  }
 
-  const onMouseUp = (event: DomEvent) => {
-    if (button.contains(event.target)) return;
-    window.setTimeout(show, 0);
+  const onMouseUp = (event: Dom) => {
+    if (elementOf(event.target)?.closest("[data-quote-selection]")) return;
+    web.setTimeout(() => {
+      if (ui.cardOpen()) return;
+      pending = readPassage();
+      if (pending && notebookFor(pending.agentId)) ui.showToolbar(pending.range.getBoundingClientRect());
+      else ui.hideToolbar();
+    }, 0);
   };
   const onSelectionChange = () => {
-    if (window.getSelection()?.isCollapsed) hide();
+    if (web.getSelection()?.isCollapsed) {
+      pending = null;
+      ui.hideToolbar();
+    }
   };
-  const onKeyDown = (
-    event: DomEvent & { metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean; shiftKey?: boolean },
-  ) => {
-    if (!pending) return;
-    if (event.key === "Escape") return hide();
-    const hasModifier = event.metaKey || event.ctrlKey || event.altKey || event.shiftKey;
-    if (hasModifier || event.key?.toLowerCase() !== "q") return;
-    if (elementOf(event.target)?.closest(EDITABLE)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    quote();
+  const onKeyDown = (event: Dom) => {
+    if (ui.toolbarOpen() && !ui.cardOpen()) {
+      if (event.key === "Escape") return ui.hideToolbar();
+      const modified = event.metaKey || event.ctrlKey || event.altKey || event.shiftKey;
+      if (!modified && event.key?.toLowerCase() === "q" && !elementOf(event.target)?.closest(EDITABLE)) {
+        event.preventDefault();
+        event.stopPropagation();
+        return openNewComment();
+      }
+    }
+    if (event.key === "Enter" && !event.shiftKey && !event.altKey && !event.isComposing) {
+      const target = elementOf(event.target);
+      if (target?.matches(COMPOSER)) attachToMessage(target);
+    }
+  };
+  /** The send button is the composer's last button. */
+  const onClick = (event: Dom) => {
+    const button = elementOf(event.target)?.closest("button");
+    const root = button?.closest(COMPOSER_ROOT);
+    if (!button || !root || button.disabled) return;
+    const buttons = root.querySelectorAll("button");
+    if (buttons[buttons.length - 1] !== button) return;
+    const input = root.querySelector(COMPOSER);
+    if (input?.value.trim()) attachToMessage(input);
   };
 
-  button.addEventListener("mousedown", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
+  // There is no hook before a message is sent, so this runs ahead of the composer's own handler:
+  // the notes are appended to the text the composer is about to send. A moment later an emptied
+  // composer means the message went out with them; otherwise Enter did something else (a newline,
+  // an autocomplete pick) and the notes are taken back out.
+  function attachToMessage(input: Dom) {
+    if (input.readOnly || input.disabled || input.value.trimStart().startsWith("/")) return;
+    const agentId = agentIdOf(input);
+    const notebook = notebookFor(agentId);
+    if (!agentId || !notebook) return;
+    const notes = notebook.get(agentId);
+    if (notes.length === 0) return;
+    const current: string = input.value;
+    const gap = !current.trim() ? "" : current.endsWith("\n\n") ? "" : current.endsWith("\n") ? "\n" : "\n\n";
+    const block = gap + formatNotes(notes);
+    insertAt(input, current.length, block);
+    web.setTimeout(() => {
+      const at = input.value.lastIndexOf(block);
+      if (at >= 0) deleteRange(input, at, at + block.length);
+      else
+        notebook.remove(
+          agentId,
+          notes.map((note) => note.id),
+        );
+    }, 0);
+  }
+
+  const onScroll = () => {
+    ui.hideToolbar();
+    scheduleRedraw();
+  };
+  const observer = new web.MutationObserver((records: Dom[]) => {
+    if (records.some((record) => !ui.owns(record.target))) scheduleRedraw();
   });
-  button.addEventListener("click", (event) => {
-    event.preventDefault();
-    quote();
-  });
-  document.addEventListener("mouseup", onMouseUp);
-  document.addEventListener("selectionchange", onSelectionChange);
-  document.addEventListener("keydown", onKeyDown as (event: DomEvent) => void, true);
-  window.addEventListener("scroll", hide, true);
-  window.addEventListener("resize", hide);
+  observer.observe(web.document.body, { childList: true, subtree: true, characterData: true });
+  web.document.addEventListener("mouseup", onMouseUp);
+  web.document.addEventListener("selectionchange", onSelectionChange);
+  // On the window, ahead of the app's type-to-focus, which would move a typed Q into the composer.
+  web.addEventListener("keydown", onKeyDown, true);
+  web.document.addEventListener("click", onClick, true);
+  web.addEventListener("scroll", onScroll, true);
+  web.addEventListener("resize", scheduleRedraw);
+  scheduleRedraw();
 
   return () => {
-    document.removeEventListener("mouseup", onMouseUp);
-    document.removeEventListener("selectionchange", onSelectionChange);
-    document.removeEventListener("keydown", onKeyDown as (event: DomEvent) => void, true);
-    window.removeEventListener("scroll", hide, true);
-    window.removeEventListener("resize", hide);
-    button.remove();
+    observer.disconnect();
+    web.document.removeEventListener("mouseup", onMouseUp);
+    web.document.removeEventListener("selectionchange", onSelectionChange);
+    web.removeEventListener("keydown", onKeyDown, true);
+    web.document.removeEventListener("click", onClick, true);
+    web.removeEventListener("scroll", onScroll, true);
+    web.removeEventListener("resize", scheduleRedraw);
+    if (frame) web.cancelAnimationFrame(frame);
+    if (runtime.redraw === scheduleRedraw) runtime.redraw = null;
+    highlights?.delete(HIGHLIGHT);
+    highlights?.delete(DRAFT_HIGHLIGHT);
+    ui.dispose();
+    style.remove();
   };
 }

@@ -1,8 +1,8 @@
 {
   "id": "quote-selection",
   "name": "Quote selection",
-  "description": "Select text in a conversation and quote it into the prompt with one click",
+  "description": "Select text in a conversation, comment on it, and send your comments with the next message",
   "requirements": {
-    "paseo": ">=0.15.3"
+    "paseo": ">=0.16.0"
   }
 }

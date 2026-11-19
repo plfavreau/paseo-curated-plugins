@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "bun test scripts/native-account-state.test.mjs && bun test scripts/balance-placement.test.mjs && bun test scripts/limit-failover.test.mjs && bun test scripts/refresh-storm.test.mjs",
+    "test": "bun test scripts/native-account-state.test.mjs && bun test scripts/balance-placement.test.mjs && bun test scripts/limit-failover.test.mjs && bun test scripts/refresh-storm.test.mjs && bun test scripts/oauth-isolation.test.mjs",
     "test:native": "bun scripts/verify-native-adapter.mjs"
   },
   "devDependencies": {

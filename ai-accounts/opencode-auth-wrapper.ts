@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
-import { ensureFreshAccount, failOver, forceRefreshAccount, readStore, resolveAccount, type AccountProvider, withStore } from "./server/account-store";
+import { ensureFreshAccount, failOver, forceRefreshAccount, readStore, resolveAccount, type AccountProvider } from "./server/account-store";
 
 const SESSION_HEADER = "x-paseo-opencode-session";
 const MAX_ANCESTRY_DEPTH = 8;
@@ -8,7 +8,7 @@ const MAX_CACHED_CHAINS = 500;
 const FAILOVER_WINDOW_MS = 10 * 60_000;
 const MAX_FAILOVERS_PER_WINDOW = 4;
 const DEFAULT_LIMIT_MS = 60 * 60_000;
-const sessionContext = new AsyncLocalStorage<string>();
+const sessionContext = new AsyncLocalStorage<{ sessionId?: string; managed: boolean }>();
 const recentFailovers = new Map<string, number[]>();
 const ancestryCache = new Map<string, string[]>();
 
@@ -24,7 +24,7 @@ async function parentSession(client: SessionReader, directory: string, sessionId
 }
 
 async function ownerChain(client: SessionReader, directory: string): Promise<string[]> {
-  const sessionId = sessionContext.getStore();
+  const sessionId = sessionContext.getStore()?.sessionId;
   if (!sessionId) return process.env.PASEO_AGENT_ID ? [process.env.PASEO_AGENT_ID] : [];
   const cached = ancestryCache.get(sessionId);
   if (cached) return cached;
@@ -73,45 +73,32 @@ function allowFailover(owner: string, now = Date.now()): boolean {
 
 export function wrapAuthPlugin(plugin: Plugin, provider: AccountProvider): Plugin {
   return async (input: PluginInput) => {
-    const client = new Proxy(input.client, {
-      get(target, property, receiver) {
-        if (property !== "auth") return Reflect.get(target, property, receiver);
-        return new Proxy(target.auth, {
-          get(authTarget, authProperty, authReceiver) {
-            if (authProperty !== "set") return Reflect.get(authTarget, authProperty, authReceiver);
-            return async (request: { body: { type: string; access?: string; refresh?: string; expires?: number } }) => {
-              const selected = await ensureFreshAccount(provider, await ownerChain(input.client, input.directory));
-              if (!selected || request.body.type !== "oauth") return authTarget.set(request as never);
-              await withStore((store) => {
-                const account = store.accounts.find((candidate) => candidate.id === selected.id);
-                if (!account) return;
-                if (request.body.access) account.access = request.body.access;
-                if (request.body.refresh) account.refresh = request.body.refresh;
-                if (request.body.expires) account.expires = request.body.expires;
-                // The harness just refreshed this login successfully, so a re-login flag is stale.
-                delete account.needsReauth;
-                account.updatedAt = new Date().toISOString();
-              });
-            };
-          },
-        });
-      },
-    });
-    const hooks = await plugin({ ...input, client });
+    const hooks = await plugin(input);
     if (!hooks.auth?.loader) return hooks;
     const loader = hooks.auth.loader;
     hooks.auth.loader = async (getAuth, providerConfig) => {
+      const hasManagedAccount = async () => (await readStore()).accounts.some((account) => account.provider === provider);
+      const managedAtLoad = await hasManagedAccount();
+      // The vendor loader needs the OAuth type to configure its fetch adapter. OpenCode also
+      // runs it during provider discovery, where no renewal or account pin should occur.
+      const discoveryAuth = { type: "oauth" as const, access: "", refresh: "", expires: 0 };
       const loaded = await loader(async () => {
+        const context = sessionContext.getStore();
+        if (!context) return managedAtLoad ? discoveryAuth : getAuth();
+        if (!context.managed) return getAuth();
         const account = await ensureFreshAccount(provider, await ownerChain(input.client, input.directory));
-        return account ? { type: "oauth", access: account.access, refresh: account.refresh, expires: account.expires } : getAuth();
+        if (!account || !account.access) throw new Error("The managed Claude login is no longer available");
+        return { type: "oauth", access: account.access, refresh: account.refresh, expires: account.expires };
       }, providerConfig);
       if (!loaded || typeof loaded !== "object" || typeof loaded.fetch !== "function") return loaded;
       const providerFetch = loaded.fetch;
       loaded.fetch = async (requestInput: RequestInfo | URL, requestInit?: RequestInit) => {
         const sessionId = requestSession(requestInput, requestInit);
         const [sanitizedInput, sanitizedInit] = withoutSessionHeader(requestInput, requestInit);
-        return sessionContext.run(sessionId ?? "", async () => {
+        const managed = managedAtLoad || await hasManagedAccount();
+        return sessionContext.run({ sessionId, managed }, async () => {
           let response = await providerFetch(sanitizedInput, sanitizedInit);
+          if (!managed) return response;
           if (response.status === 401) {
             // The vendor rejected the token outright, regardless of what our locally recorded
             // `expires` claims (server-side revocation, a plan change, clock skew). Force a real

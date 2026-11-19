@@ -473,9 +473,11 @@ async function adoptOpenCodeRotation(account: StoredAccount): Promise<boolean> {
       return false;
     }
     Object.assign(account, candidate);
+    // Object.assign cannot remove the failure keys the candidate dropped.
+    clearRefreshFailure(account);
     return true;
-  } catch (error) {
-    console.error(`Could not recover the ${account.provider} login from OpenCode:`, error);
+  } catch {
+    // The caller records the recovery outcome without exposing vendor errors or credentials.
     return false;
   }
 }
@@ -483,9 +485,11 @@ async function adoptOpenCodeRotation(account: StoredAccount): Promise<boolean> {
 function retryAfterMs(response: Response): number {
   const header = response.headers.get("retry-after");
   if (!header) return 0;
+  const now = Date.now();
   const seconds = Number(header);
-  const at = Number.isFinite(seconds) ? Date.now() + seconds * 1000 : Date.parse(header);
-  return Number.isNaN(at) ? 0 : Math.max(0, at - Date.now());
+  const at = Number.isFinite(seconds) ? now + seconds * 1000 : Date.parse(header);
+  // Invalid or unrepresentable dates are ignored; the normal backoff still applies.
+  return Number.isFinite(new Date(at).getTime()) ? Math.max(0, at - now) : 0;
 }
 
 /** Persisted in the shared store, so every OpenCode process on the host waits out the same backoff. */
@@ -494,13 +498,24 @@ function deferRefresh(account: StoredAccount, minimumMs: number): void {
   const backoff = Math.min(REFRESH_BACKOFF_MS * 2 ** (failures - 1), MAX_REFRESH_BACKOFF_MS);
   const jittered = backoff * (0.5 + Math.random() / 2);
   account.refreshFailures = failures;
-  account.refreshRetryAt = new Date(Date.now() + Math.max(minimumMs, jittered)).toISOString();
+  // Recovery can take time after Retry-After was parsed: keep the final deadline representable.
+  account.refreshRetryAt = new Date(Math.min(8.64e15, Date.now() + Math.max(minimumMs, jittered))).toISOString();
 }
 
 function clearRefreshFailure(account: StoredAccount): void {
   delete account.needsReauth;
   delete account.refreshRetryAt;
   delete account.refreshFailures;
+}
+
+function logRefreshFailure(account: StoredAccount, details: {
+  classification: "timeout" | "transport" | "http" | "rejected";
+  status?: number;
+  retryAfterMs?: number;
+  recovery: "not-attempted" | "recovered" | "not-recovered";
+  outcome: "backoff" | "reauth" | "recovered";
+}): void {
+  console.error("[ai-accounts] OAuth refresh failed", { provider: account.provider, accountId: account.id, ...details });
 }
 
 /**
@@ -515,22 +530,27 @@ async function refreshCredentials(account: StoredAccount): Promise<void> {
   try {
     response = await requestRefresh(account.provider, account.refresh);
   } catch (error) {
-    console.error(`Could not renew the ${account.email} Claude login:`, error);
     deferRefresh(account, 0);
+    logRefreshFailure(account, { classification: error instanceof Error && error.name === "TimeoutError" ? "timeout" : "transport", recovery: "not-attempted", outcome: "backoff" });
     return;
   }
   if (response.ok) applyTokens(account, (await response.json()) as TokenResponse);
   else if (!tokenRejected(response.status)) {
-    await response.body?.cancel();
-    deferRefresh(account, retryAfterMs(response));
+    await response.body?.cancel().catch(() => undefined);
+    const delay = retryAfterMs(response);
+    deferRefresh(account, delay);
+    logRefreshFailure(account, { classification: "http", status: response.status, retryAfterMs: delay, recovery: "not-attempted", outcome: "backoff" });
     return;
   } else {
-    await response.body?.cancel();
+    await response.body?.cancel().catch(() => undefined);
+    const delay = retryAfterMs(response);
     if (!(await adoptOpenCodeRotation(account))) {
       account.needsReauth = new Date().toISOString();
       deferRefresh(account, REJECTED_REFRESH_RETRY_MS);
+      logRefreshFailure(account, { classification: "rejected", status: response.status, retryAfterMs: delay, recovery: "not-recovered", outcome: "reauth" });
       return;
     }
+    logRefreshFailure(account, { classification: "rejected", status: response.status, retryAfterMs: delay, recovery: "recovered", outcome: "recovered" });
   }
   if (account.provider === "anthropic" && (await hasNamespace(account.id))) await writeClaudeCredentials(account);
 }
@@ -594,9 +614,11 @@ export async function refreshUsage(accountId: string): Promise<void> {
       found.usageError = found.needsReauth ? "Sign in again" : "Token refresh is backing off";
       return undefined;
     }
-    return { id: found.id, provider: found.provider, access: found.access, externalAccountId: found.externalAccountId };
+    return { id: found.id, access: found.access, updatedAt: found.updatedAt };
   });
   if (!account) return;
+  // Usage fetches outlive the store lock: only apply results to the credential that was probed.
+  const matchesProbe = (candidate: StoredAccount) => candidate.id === account.id && candidate.access === account.access && candidate.updatedAt === account.updatedAt;
   try {
     const response = await fetch(
       // `cedar_ember` adds the banked limit resets, as Claude Code's /limit-reset reads them.
@@ -610,7 +632,7 @@ export async function refreshUsage(accountId: string): Promise<void> {
     if (!response.ok) {
       const authExpired = response.status === 401;
       await withStore((store) => {
-        const found = store.accounts.find((candidate) => candidate.id === account.id);
+        const found = store.accounts.find(matchesProbe);
         if (found) {
           found.usageFetchedAt = new Date().toISOString();
           found.usageError = `Usage request failed (${response.status})`;
@@ -624,7 +646,7 @@ export async function refreshUsage(accountId: string): Promise<void> {
     }
     const usage = await response.json();
     await withStore((store) => {
-      const found = store.accounts.find((candidate) => candidate.id === account.id);
+      const found = store.accounts.find(matchesProbe);
       if (found) {
         found.usage = usage;
         found.usageFetchedAt = new Date().toISOString();
@@ -635,7 +657,7 @@ export async function refreshUsage(accountId: string): Promise<void> {
     });
   } catch (error) {
     await withStore((store) => {
-      const found = store.accounts.find((candidate) => candidate.id === account.id);
+      const found = store.accounts.find(matchesProbe);
       if (found) {
         found.usageFetchedAt = new Date().toISOString();
         found.usageError = error instanceof Error ? error.message : String(error);
